@@ -1,0 +1,14 @@
+{
+  "bindHost": "192.168.11.166",
+  "websocketPath": "/ws",
+  "rules": [
+    { "id": "S0", "enabled": true, "header": "AA", "length": 1777, "checksum": "None", "port": 7101, "sheet": 0, "type": "1", "endian": "大端" },
+    { "id": "S1", "enabled": true, "header": "26", "length": 1777, "checksum": "None", "port": 7102, "sheet": 1, "type": "1", "endian": "大端" },
+    { "id": "S2", "enabled": true, "header": "07 40", "length": 1024, "checksum": "None", "port": 7103, "sheet": 2, "type": "1", "endian": "大端" },
+    { "id": "S3", "enabled": true, "header": "07 50", "length": 1024, "checksum": "None", "port": 7104, "sheet": 3, "type": "1", "endian": "大端" },
+    { "id": "S4", "enabled": true, "header": "07 60", "length": 1024, "checksum": "None", "port": 7105, "sheet": 4, "type": "1", "endian": "大端" },
+    { "id": "S5", "enabled": true, "header": "07 70", "length": 1024, "checksum": "None", "port": 7106, "sheet": 5, "type": "1", "endian": "大端" },
+    { "id": "S6", "enabled": true, "header": "07 80", "length": 1024, "checksum": "None", "port": 7107, "sheet": 6, "type": "1", "endian": "大端" },
+    { "id": "S7", "enabled": true, "header": "1A CF", "length": 29, "checksum": "None", "port": 7108, "sheet": 7, "type": "1", "endian": "大端" }
+  ]
+}

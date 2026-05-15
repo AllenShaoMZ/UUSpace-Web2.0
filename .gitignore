@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+
+# Runtime logs
+*.log
+logs/
+
+# Local editor/system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Build/cache output
+dist/
+build/
+coverage/
+.cache/
+
+# Large/local mission data
+*.zip
+*.7z
+*.rar
+*.bak
+*.tmp
+
+# Keep sample workbook directories explicit; uncomment if real mission data should stay local only.
+# Meter/
+# Commad/

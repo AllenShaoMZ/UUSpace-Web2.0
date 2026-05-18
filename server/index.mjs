@@ -136,7 +136,41 @@ function readCommandXls() {
 }
 
 const app = express();
+app.use(express.json({ limit: "64kb" }));
 app.use(express.static(ROOT));
+
+function parseCommandHex(data) {
+  const clean = String(data || "").replace(/\s+/g, "").trim();
+  if (!clean || clean.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(clean)) {
+    return null;
+  }
+  return Buffer.from(clean, "hex");
+}
+
+app.post("/api/command/send", (req, res) => {
+  const payload = req.body || {};
+  const target = String(payload.target || "").trim();
+  const port = Number(payload.port) || 0;
+  const data = String(payload.data || "");
+  if (!target || !port || !String(data).replace(/\s+/g, "").trim()) {
+    res.json({ success: false, error: "目标地址、端口和 HEX 数据均为必填" });
+    return;
+  }
+  const packet = parseCommandHex(data);
+  if (!packet || packet.length === 0) {
+    res.json({ success: false, error: "报文不是合法的 HEX 字符串" });
+    return;
+  }
+  const sock = dgram.createSocket("udp4");
+  sock.send(packet, port, target, (err) => {
+    sock.close();
+    if (err) {
+      res.json({ success: false, error: String(err.message || err) });
+      return;
+    }
+    res.json({ success: true, sentTo: `${target}:${port}`, bytes: packet.length });
+  });
+});
 
 app.get('/api/protocol', (_req, res) => {
   try {
@@ -208,41 +242,47 @@ for (const r of rules) {
   portSet.get(p).push(r);
 }
 
-for (const [port, portRules] of portSet) {
-  const sock = dgram.createSocket('udp4');
-  sock.on('error', (err) => {
-    console.error(`[UDP ${port}]`, err.message);
-  });
-  sock.on('message', (msg, rinfo) => {
-    let matchedRule = null;
-    let checksumOk = null;
-    for (const rule of portRules) {
-      const m = matchRule(msg, rule);
-      if (m.ok) {
-        matchedRule = m.rule;
-        checksumOk = m.checksumOk;
-        break;
-      }
-    }
-    const hex = msg.subarray(0, Math.min(msg.length, 512)).toString('hex').replace(/(.{2})/g, '$1 ').trim();
-    broadcast({
-      type: 'udp',
-      port,
-      remote: `${rinfo.address}:${rinfo.port}`,
-      length: msg.length,
-      frameId: matchedRule ? matchedRule.id : null,
-      headerMatch: !!matchedRule,
-      checksumOk: checksumOk == null ? null : checksumOk,
-      hex,
-      ts: Date.now(),
+if (!process.env.UUSPACE_TEST) {
+  for (const [port, portRules] of portSet) {
+    const sock = dgram.createSocket('udp4');
+    sock.on('error', (err) => {
+      console.error(`[UDP ${port}]`, err.message);
     });
-  });
-  sock.bind(port, protocol.bindHost || '0.0.0.0', () => {
-    console.log(`[UDP] listening ${protocol.bindHost || '0.0.0.0'}:${port} (${portRules.map((x) => x.id).join(', ')})`);
-  });
+    sock.on('message', (msg, rinfo) => {
+      let matchedRule = null;
+      let checksumOk = null;
+      for (const rule of portRules) {
+        const m = matchRule(msg, rule);
+        if (m.ok) {
+          matchedRule = m.rule;
+          checksumOk = m.checksumOk;
+          break;
+        }
+      }
+      const hex = msg.subarray(0, Math.min(msg.length, 512)).toString('hex').replace(/(.{2})/g, '$1 ').trim();
+      broadcast({
+        type: 'udp',
+        port,
+        remote: `${rinfo.address}:${rinfo.port}`,
+        length: msg.length,
+        frameId: matchedRule ? matchedRule.id : null,
+        headerMatch: !!matchedRule,
+        checksumOk: checksumOk == null ? null : checksumOk,
+        hex,
+        ts: Date.now(),
+      });
+    });
+    sock.bind(port, protocol.bindHost || '0.0.0.0', () => {
+      console.log(`[UDP] listening ${protocol.bindHost || '0.0.0.0'}:${port} (${portRules.map((x) => x.id).join(', ')})`);
+    });
+  }
 }
 
-server.listen(HTTP_PORT, () => {
-  console.log(`[HTTP] http://127.0.0.1:${HTTP_PORT}/  static + API`);
-  console.log(`[WS]   ws://127.0.0.1:${HTTP_PORT}${protocol.websocketPath || '/ws'}`);
-});
+export { app };
+
+if (!process.env.UUSPACE_TEST) {
+  server.listen(HTTP_PORT, () => {
+    console.log(`[HTTP] http://127.0.0.1:${HTTP_PORT}/  static + API`);
+    console.log(`[WS]   ws://127.0.0.1:${HTTP_PORT}${protocol.websocketPath || '/ws'}`);
+  });
+}

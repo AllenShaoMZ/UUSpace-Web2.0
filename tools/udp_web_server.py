@@ -23,8 +23,34 @@ from collections import deque
 from dataclasses import dataclass
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from typing import Deque, Dict, List, Set
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(_TOOLS_DIR)
+
+
+def resolve_project_root(root: str | None = None) -> str:
+    candidate = os.path.abspath(root or PROJECT_ROOT)
+    if os.path.isdir(os.path.join(candidate, "Meter")) or os.path.isdir(os.path.join(candidate, "Commad")):
+        return candidate
+    nested = os.path.join(candidate, "UUSpace-Web2.0")
+    if os.path.isdir(os.path.join(nested, "Meter")) or os.path.isdir(os.path.join(nested, "Commad")):
+        return nested
+    return candidate
+
+
+def default_meter_file(root: str) -> str:
+    meter_dir = os.path.join(root, "Meter")
+    if not os.path.isdir(meter_dir):
+        return ""
+    preferred = os.path.join(meter_dir, "卫星1遥测大表.xlsx")
+    if os.path.exists(preferred):
+        return preferred
+    for filename in sorted(os.listdir(meter_dir)):
+        if re.search(r"\.xlsx?$", filename, re.IGNORECASE):
+            return os.path.join(meter_dir, filename)
+    return ""
 
 
 def utc_now() -> str:
@@ -33,6 +59,150 @@ def utc_now() -> str:
 
 def ascii_preview(data: bytes) -> str:
     return "".join(chr(b) if 32 <= b <= 126 else "." for b in data[:80])
+
+
+def iso_from_unix_seconds(value: float) -> str:
+    if value is None or math.isnan(value) or math.isinf(value) or value <= 0:
+        return utc_now()
+    try:
+        return dt.datetime.utcfromtimestamp(value).replace(microsecond=0).isoformat() + "Z"
+    except (OverflowError, OSError, ValueError):
+        return utc_now()
+
+
+def looks_like_command_row(row: Dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+    return any(str(value).strip() for value in row.values())
+
+
+def command_dir(root: str) -> str:
+    preferred = os.path.join(root, "Command")
+    if os.path.isdir(preferred):
+        return preferred
+    return os.path.join(root, "Commad")
+
+
+def read_commands(root: str) -> Dict:
+    json_path = os.path.join(command_dir(root), "commands.json")
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        commands = payload.get("commands", payload if isinstance(payload, list) else [])
+        if isinstance(commands, list):
+            commands = [row for row in commands if looks_like_command_row(row)]
+        return {
+            "source": payload.get("source", "commands.json") if isinstance(payload, dict) else "commands.json",
+            "commands": commands,
+        }
+    return {"source": "", "commands": []}
+
+
+def read_protocol(root: str, udp_state=None) -> Dict:
+    protocol_path = os.path.join(root, "config", "protocol.json")
+    payload: Dict = {}
+    if os.path.exists(protocol_path):
+        with open(protocol_path, "r", encoding="utf-8") as f:
+            try:
+                payload = json.load(f) or {}
+            except json.JSONDecodeError:
+                payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    fallback_rules = [
+        {
+            "id": f"S{index}",
+            "enabled": True,
+            "header": "",
+            "length": 0,
+            "checksum": "关闭",
+            "port": port,
+            "sheet": index,
+            "type": "1",
+            "endian": "大端",
+        }
+        for index, port in enumerate(udp_state.udp_ports if udp_state else range(7101, 7109))
+    ]
+    rules = payload.get("rules")
+    if not isinstance(rules, list) or len(rules) == 0:
+        payload["rules"] = fallback_rules
+    if udp_state is not None:
+        payload.setdefault("bindHost", udp_state.udp_host)
+    for rule in payload.get("rules", []):
+        if isinstance(rule, dict) and rule.get("checksum") in (None, "None", "none"):
+            rule["checksum"] = "关闭"
+    payload["websocketPath"] = ""
+    payload.setdefault("eventSourcePath", "/api/udp/events")
+    payload.setdefault("bridge", "sse")
+    return payload
+
+
+def list_meter_workbooks(root: str) -> List[Dict]:
+    meter_dir = os.path.join(root, "Meter")
+    if not os.path.isdir(meter_dir):
+        return []
+    workbooks = []
+    for filename in sorted(os.listdir(meter_dir)):
+        if not re.search(r"\.xlsx?$", filename, re.IGNORECASE):
+            continue
+        workbooks.append(
+            {
+                "id": os.path.splitext(filename)[0],
+                "filename": filename,
+                "path": f"/api/meter/{filename}",
+            }
+        )
+    return workbooks
+
+
+def read_meter_workbook(root: str, filename: str) -> Dict:
+    meter_dir = os.path.join(root, "Meter")
+    safe_name = os.path.basename(filename)
+    meter_file = os.path.join(meter_dir, safe_name)
+    if not os.path.exists(meter_file):
+        raise FileNotFoundError(f"找不到文件: {safe_name}")
+    parser = XlsxTelemetryParser("", max_values=0)
+    with zipfile.ZipFile(meter_file) as z:
+        shared_strings = parser.load_shared_strings(z)
+        sheet_paths = parser.load_sheet_paths(z)
+        if not sheet_paths:
+            return {"sheetName": "", "headers": [], "rows": []}
+        sheet_name, path = next(iter(sheet_paths.items()))
+        rows = parser.load_rows(z, path, shared_strings)
+    headers = [str(cell).strip() for cell in (rows[0] if rows else [])]
+    data: List[Dict] = []
+    for row in rows[1:]:
+        if not row or not any(str(cell).strip() for cell in row):
+            continue
+        obj = {}
+        for index, header in enumerate(headers):
+            if not header:
+                continue
+            obj[header] = row[index] if index < len(row) else ""
+        data.append(obj)
+    return {"sheetName": sheet_name, "headers": headers, "rows": data}
+
+
+def read_cmdchain(root: str) -> List[Dict]:
+    fp = os.path.join(command_dir(root), "cmdchain.txt")
+    if not os.path.exists(fp):
+        return []
+    chains: List[Dict] = []
+    with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
+            chains.append(
+                {
+                    "category": parts[0] if len(parts) > 0 else "",
+                    "name": parts[1] if len(parts) > 1 else "",
+                    "commandIds": [item.strip() for item in (parts[2] if len(parts) > 2 else "").split(",") if item.strip()],
+                    "weight": parts[3] if len(parts) > 3 else "",
+                }
+            )
+    return chains
 
 
 def parse_float(value: str) -> float:
@@ -101,6 +271,39 @@ def read_int(data: bytes, index: int, byte_width: int) -> int:
     if index < 0 or index + byte_width > len(data):
         raise IndexError("telemetry byte range out of packet")
     return int.from_bytes(data[index:index + byte_width], "big", signed=True)
+
+
+def try_unwrap_forward_frame(frame: bytes):
+    if frame is None or len(frame) < 13:
+        return False, frame, -1, -1, math.nan, 0
+    if frame[:4] != b"URLY":
+        return False, frame, -1, -1, math.nan, 0
+    version = frame[4]
+    if version == 3:
+        ts_ms = int.from_bytes(frame[5:13], "big", signed=True)
+        payload = frame[13:]
+        return True, payload, -1, -1, (ts_ms / 1000.0 if ts_ms > 0 else math.nan), version
+    if version not in (1, 2):
+        return False, frame, -1, -1, math.nan, 0
+    header_len = 21 if version == 2 else 13
+    if len(frame) < header_len:
+        return False, frame, -1, -1, math.nan, 0
+    original_port = int.from_bytes(frame[5:7], "big", signed=False)
+    original_sheet_index = int.from_bytes(frame[7:9], "big", signed=False)
+    inner_len = int.from_bytes(frame[9:13], "big", signed=False)
+    if inner_len <= 0 or header_len + inner_len > len(frame):
+        return False, frame, -1, -1, math.nan, 0
+    if version == 2:
+        ts_ms = int.from_bytes(frame[13:21], "big", signed=True)
+        source_timestamp = ts_ms / 1000.0 if ts_ms > 0 else math.nan
+    else:
+        source_timestamp = math.nan
+    payload = frame[header_len:header_len + inner_len]
+    if original_sheet_index == 65535:
+        original_sheet_index = -1
+    if original_port <= 0:
+        original_port = -1
+    return True, payload, original_port, original_sheet_index, source_timestamp, version
 
 
 @dataclass
@@ -421,27 +624,43 @@ class UdpState:
     def add_packet(self, data: bytes, addr, listen_port: int) -> Dict:
         with self.lock:
             self.total += 1
-            sheet_index = self.port_to_sheet.get(listen_port)
+            forwarded, payload, forwarded_source_port, forwarded_sheet_index, relay_timestamp, forward_version = try_unwrap_forward_frame(data)
+            listen_sheet_index = self.port_to_sheet.get(listen_port)
+            effective_sheet = forwarded_sheet_index
+            if effective_sheet is None or effective_sheet < 0:
+                if forwarded_source_port in self.port_to_sheet:
+                    effective_sheet = self.port_to_sheet.get(forwarded_source_port)
+                else:
+                    effective_sheet = listen_sheet_index
+            packet_time = iso_from_unix_seconds(relay_timestamp) if forwarded else utc_now()
             packet = {
-                "time": utc_now(),
+                "time": packet_time,
                 "sourceIp": addr[0],
                 "sourcePort": addr[1],
                 "listenPort": listen_port,
-                "sheetIndex": sheet_index,
-                "length": len(data),
-                "hex": data[:96].hex(" ").upper(),
-                "ascii": ascii_preview(data),
+                "sheetIndex": effective_sheet,
+                "listenSheetIndex": listen_sheet_index,
+                "length": len(payload),
+                "rawLength": len(data),
+                "hex": payload[:96].hex(" ").upper(),
+                "rawHex": data[:96].hex(" ").upper(),
+                "ascii": ascii_preview(payload),
                 "total": self.total,
+                "forwarded": forwarded,
+                "forwardVersion": forward_version if forwarded else None,
+                "forwardedSourcePort": forwarded_source_port,
+                "forwardedSheetIndex": forwarded_sheet_index,
+                "relayTimestamp": relay_timestamp if forwarded else None,
             }
-            if self.parser and self.parser.enabled and sheet_index is not None:
-                packet["parsed"] = self.parser.parse_packet(sheet_index, data)
+            if self.parser and self.parser.enabled and effective_sheet is not None:
+                packet["parsed"] = self.parser.parse_packet(effective_sheet, payload)
                 parsed_values = packet["parsed"].get("values", [])
                 latest = {}
                 for value in parsed_values:
                     code = value.get("code")
                     if code:
                         latest[code] = {**value, "updatedAt": packet["time"]}
-                self.latest_values[sheet_index] = latest
+                self.latest_values[effective_sheet] = latest
                 packet["updatedCount"] = len(parsed_values)
             self.last_packet = packet
             self.history.appendleft(packet)
@@ -450,10 +669,10 @@ class UdpState:
                 self.port_stats[listen_port]["lastPacket"] = packet
                 self.port_stats[listen_port]["lastTime"] = packet["time"]
                 self.port_stats[listen_port]["updatedCount"] = packet.get("updatedCount", 0)
-            if sheet_index in self.sheet_stats:
-                self.sheet_stats[sheet_index]["total"] += 1
-                self.sheet_stats[sheet_index]["lastTime"] = packet["time"]
-                self.sheet_stats[sheet_index]["updatedCount"] = packet.get("updatedCount", 0)
+            if effective_sheet in self.sheet_stats:
+                self.sheet_stats[effective_sheet]["total"] += 1
+                self.sheet_stats[effective_sheet]["lastTime"] = packet["time"]
+                self.sheet_stats[effective_sheet]["updatedCount"] = packet.get("updatedCount", 0)
             subscribers = list(self.subscribers)
 
         for subscriber in subscribers:
@@ -504,23 +723,84 @@ class UdpState:
 
 class UdpBridgeHandler(SimpleHTTPRequestHandler):
     udp_state: UdpState
+    web_root: str = PROJECT_ROOT
 
     def end_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         super().end_headers()
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def web_root_path(self) -> str:
+        return self.web_root or PROJECT_ROOT
+
     def do_GET(self) -> None:
+        root = self.web_root_path()
         path = urlparse(self.path).path
         if path == "/api/udp/status":
             self.send_json(self.udp_state.snapshot())
             return
+        if path == "/api/protocol":
+            self.send_json(read_protocol(root, self.udp_state))
+            return
+        if path == "/api/satellites":
+            self.send_json({"satellites": list_meter_workbooks(root)})
+            return
+        if path.startswith("/api/meter/"):
+            filename = unquote(path[len("/api/meter/"):])
+            try:
+                self.send_json(read_meter_workbook(root, filename))
+            except Exception as exc:
+                self.send_json({"error": str(exc)})
+            return
+        if path == "/api/cmdchain":
+            self.send_json({"chains": read_cmdchain(root)})
+            return
         if path == "/api/telemetry/definitions":
             self.send_json(self.udp_state.telemetry_definitions())
+            return
+        if path == "/api/commands":
+            self.send_json(read_commands(root))
             return
         if path == "/api/udp/events":
             self.send_events()
             return
         super().do_GET()
+
+    def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/api/command/send":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length else b""
+            try:
+                payload = json.loads(body.decode("utf-8") if body else "{}")
+            except Exception as exc:
+                self.send_json({"success": False, "error": f"解析请求体失败: {exc}"})
+                return
+            target = str(payload.get("target", "")).strip()
+            port = int(payload.get("port") or 0)
+            data = str(payload.get("data", "")).replace(" ", "").strip()
+            if not target or not port or not data:
+                self.send_json({"success": False, "error": "目标地址、端口和 HEX 数据均为必填"})
+                return
+            try:
+                packet = bytes.fromhex(data)
+            except ValueError:
+                self.send_json({"success": False, "error": "报文不是合法的 HEX 字符串"})
+                return
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.sendto(packet, (target, port))
+                self.send_json({"success": True, "sentTo": f"{target}:{port}", "bytes": len(packet)})
+            except Exception as exc:
+                self.send_json({"success": False, "error": str(exc)})
+            return
+        self.send_error(404, "Not Found")
 
     def send_json(self, payload: Dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -582,7 +862,7 @@ def parse_ports(value: str) -> List[int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="UUSPACE static web + UDP bridge")
-    parser.add_argument("--root", default=os.getcwd(), help="static web root")
+    parser.add_argument("--root", default=PROJECT_ROOT, help="static web root (default: repo root)")
     parser.add_argument("--host", default="0.0.0.0", help="HTTP bind host")
     parser.add_argument("--http-port", type=int, default=8080, help="HTTP port")
     parser.add_argument("--udp-host", default="192.168.11.166", help="UDP bind host")
@@ -590,25 +870,30 @@ def main() -> None:
     parser.add_argument("--udp-ports", default=None, help="UDP ports, e.g. 7101-7108 or 7101,7102")
     parser.add_argument(
         "--meter-file",
-        default=r"D:\UUSpace1.0.0\SateliteController\Dll\Meter\卫星1遥测大表.xlsx",
-        help="telemetry definition xlsx",
+        default="",
+        help="telemetry definition xlsx (default: first xlsx under <root>/Meter)",
     )
     parser.add_argument("--max-values", type=int, default=0, help="max parsed values per UDP packet, 0 means all")
     args = parser.parse_args()
 
-    os.chdir(args.root)
+    web_root = resolve_project_root(args.root)
+    os.chdir(web_root)
+    meter_file = args.meter_file.strip() or default_meter_file(web_root)
     udp_ports = parse_ports(args.udp_ports) if args.udp_ports else ([args.udp_port] if args.udp_port else list(range(7101, 7109)))
-    parser_engine = XlsxTelemetryParser(args.meter_file, max_values=args.max_values)
+    parser_engine = XlsxTelemetryParser(meter_file, max_values=args.max_values)
     state = UdpState(args.udp_host, udp_ports, parser_engine)
     UdpBridgeHandler.udp_state = state
+    UdpBridgeHandler.web_root = web_root
 
     for udp_port in udp_ports:
         threading.Thread(target=udp_listener, args=(state, udp_port), daemon=True).start()
     server = ThreadingHTTPServer((args.host, args.http_port), UdpBridgeHandler)
 
+    print(f"Root: {web_root}")
     print(f"HTTP: http://{args.host}:{args.http_port}")
     print(f"UDP : {args.udp_host}:{','.join(str(port) for port in udp_ports)}")
-    print(f"Meter: {args.meter_file if parser_engine.enabled else 'disabled / not found'}")
+    print(f"Meter: {meter_file if parser_engine.enabled else 'disabled / not found'}")
+    print(f"Commands: {command_dir(web_root)}")
     print("Open the HTTP URL from LAN clients, then send UDP packets to this machine.")
     server.serve_forever()
 

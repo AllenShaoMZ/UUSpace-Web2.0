@@ -9,7 +9,7 @@
 - 遥测表格：每个 UDP 端口对应一个 Sheet 表格，支持 Sheet 切换、刷新状态、搜索、收藏、添加表格。
 - 遥测曲线：从表格选中参数添加曲线，或在曲线页勾选 Sheet 参数。
 - 状态总览：链路状态、告警、状态流。
-- 指令控制：指令卡片、源码展示、发送确认入口。
+- 指令控制：指令卡片、源码展示、按软件端代号规则分类、发送确认入口。
 
 不包含回放功能。
 
@@ -30,7 +30,7 @@
 
 ## 本机运行
 
-在项目目录运行：
+在仓库根目录 `UUSpace-Web2.0` 运行（`--root` 默认即仓库根，会加载 `Meter/`、`Commad/`、`config/`）：
 
 ```powershell
 python tools\udp_web_server.py --host 0.0.0.0 --http-port 8080 --udp-host 192.168.11.166 --udp-ports 7101-7108
@@ -42,6 +42,12 @@ python tools\udp_web_server.py --host 0.0.0.0 --http-port 8080 --udp-host 192.16
 python tools\udp_web_server.py --host 0.0.0.0 --http-port 8080 --udp-host 0.0.0.0 --udp-ports 7101-7108
 ```
 
+若卫星下拉为空，请显式指定根目录：
+
+```powershell
+python tools\udp_web_server.py --root D:\UUSpace1.0.0\UUSpace-Web2.0 --http-port 8080 --udp-host 0.0.0.0 --udp-ports 7101-7108
+```
+
 局域网访问：
 
 ```text
@@ -51,6 +57,7 @@ http://本机IP:8080/
 ## Docker 运行
 
 ```powershell
+node tools\export_commands_json.mjs
 docker compose up --build
 ```
 
@@ -65,11 +72,14 @@ Docker 会暴露：
 D:/UUSpace1.0.0/SateliteController/Dll/Meter:/meter:ro
 ```
 
+指令表来自 `Commad/指令列表.xls`。Docker 镜像使用 `Commad/commands.json`，修改 `.xls` 后先运行 `node tools\export_commands_json.mjs` 重新生成缓存。
+
 ## 验证 UDP 数据
 
 打开网页后进入“连接管理”或“遥测表格”。向本机 UDP 7101-7108 任一端口发送数据后：
 
 - 连接管理页会显示最近报文、来源、HEX。
+- 如果收到软件端转发的 `URLY` V1/V2/V3 包，服务端会先解封装再解析内部 payload。
 - 对应 Sheet 标签会显示包数。
 - 遥测表格顶部会显示最近更新时间和刷新状态。
 - 如果报文长度与遥测大表路序匹配，当前值列会更新。

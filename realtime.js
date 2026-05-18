@@ -76,6 +76,33 @@
     return { code, name, group, frame, value, unit, status, raw: raw || "—" };
   }
 
+  function classifyCommandCategory(code, fallbackCategory) {
+    const clean = String(code || "").trim().toUpperCase();
+    const explicit = String(fallbackCategory || "").trim();
+    if (explicit && !/^\d+$/.test(explicit)) return explicit;
+    if (clean.startsWith("K")) return "星上指令";
+    if (clean.startsWith("DLX") || clean.startsWith("D")) return "动力学指令";
+    if (clean.startsWith("P")) return "参数上注";
+    return "其他指令";
+  }
+
+  function commandTypeLabel(typeValue) {
+    const raw = String(typeValue ?? "").trim();
+    const labels = {
+      "0": "间接指令",
+      "1": "内部指令",
+      "2": "单地址注数",
+      "3": "立即软件注数",
+      "4": "延时间接指令",
+      "5": "延时内部指令",
+      "6": "延时软件注数",
+      "7": "连续地址注数单包",
+      "8": "连续地址注数多包64",
+      "9": "连续地址注数多包256",
+    };
+    return labels[raw] || raw || "未分类";
+  }
+
   function mapCommandRow(row, i) {
     const r = { ...row };
     const get = (...aliases) => {
@@ -92,16 +119,39 @@
       }
       return "";
     };
-    const id = get("指令代号", "代号", "代码", "code", "Code", "ID") || `CMD${i + 1}`;
-    const name = get("指令名称", "名称", "name", "Name", "说明") || id;
-    const category = get("类别", "分类", "category", "指令类别", "类型") || "星上指令";
-    const target = get("目标地址", "目标", "target", "IP") || "192.168.1.100";
-    const port = get("端口", "port", "UDP") || "19200";
-    const type = get("指令类型", "类型", "type") || "间接指令";
-    const node = get("节点", "软件", "node", "执行单元") || "—";
-    const packet = get("指令码", "报文", "packet", "包", "HEX", "十六进制") || "";
+    const id = get("Num", "num", "指令代号", "代号", "代码", "编号", "code", "Code", "ID");
+    const name = get("Name", "name", "指令名称", "名称", "说明");
+    const rawType = get("Type", "type", "类型");
+    const dataSrc = get("DataSrc", "datasrc", "数据源", "源码来源");
+    const packet = get("data", "Data", "指令码", "报文", "packet", "包", "HEX", "十六进制");
+    if (!id && !packet) {
+      return null;
+    }
+    const code = id || `CMD${i + 1}`;
+    const displayName = name || code;
+    const category = classifyCommandCategory(code, get("类别", "分类", "category", "指令类别"));
+    const target = get("目标IP", "目标地址", "目标", "target", "IP") || "192.168.11.166";
+    const portRaw = get("目标端口号", "目标端口", "端口", "port", "UDP");
+    const port = portRaw ? String(portRaw) : "19200";
+    const type = commandTypeLabel(rawType);
+    const node = get("节点", "MachineID", "机器ID", "软件", "node", "执行单元", "所属系统") || "—";
     const desc = get("描述", "说明", "desc", "备注") || "";
-    return { id, name, category, target, port, type, node, packet, desc };
+    const sourceMode = dataSrc === "-1" ? "可参数化模板" : dataSrc === "1" ? "固定源码" : dataSrc || "未标记";
+    return {
+      id: code,
+      name: displayName,
+      category,
+      target,
+      port,
+      type,
+      node,
+      packet,
+      desc,
+      rawType,
+      dataSrc,
+      sourceMode,
+      rawRow: { ...row },
+    };
   }
 
   function rebuildTelemetryGroups() {
@@ -112,7 +162,7 @@
     for (const p of parameters) {
       const g = p.group || "未分组";
       if (!byGroup.has(g)) byGroup.set(g, []);
-      const num = parseFloat(String(p.value).replace(/[^\d.-+eE]/g, ""));
+      const num = parseFloat(String(p.value).replace(/[^\d.+\-eE]/g, ""));
       byGroup.get(g).push({
         code: p.code,
         name: (p.name || p.code).slice(0, 12),
@@ -148,7 +198,12 @@
 
   function applyProtocol(cfg) {
     const a = api();
-    const rules = cfg.rules || [];
+    const rules = Array.isArray(cfg.rules) ? cfg.rules : [];
+    if (!rules.length) {
+      console.warn("[realtime] /api/protocol 未返回 rules，保留内置协议表");
+      a.appendStatusEvent("协议表为空", "已保留页面内置 S0–S7 规则，请检查 config/protocol.json");
+      return cfg.websocketPath || "";
+    }
     a.protocolRules.splice(0, a.protocolRules.length, ...rules);
     const ports = [
       ...new Set(
@@ -174,7 +229,7 @@
     if (el) el.textContent = ports.length ? ports.join(" / ") : "无启用端口";
     a.renderNavigation();
     a.renderView();
-    return cfg.websocketPath || "/ws";
+    return cfg.websocketPath || "";
   }
 
   async function loadMeterByFilename(filename) {
@@ -192,22 +247,35 @@
     a.renderView();
   }
 
-  async function loadCommandsMerged() {
+  async function loadCommandsMerged(showStatus = false) {
     const a = api();
     let cmdRows = [];
     try {
       const res = await fetch("/api/commands");
+      if (!res.ok) throw new Error(await res.text());
       const j = await res.json();
       cmdRows = j.commands || [];
-    } catch (_) {
+    } catch (e) {
+      if (showStatus) a.appendStatusEvent("指令表导入失败", String(e.message || e));
       return;
     }
-    const mapped = cmdRows.map(mapCommandRow);
+    const mapped = cmdRows.map(mapCommandRow).filter(Boolean);
     if (mapped.length) {
       a.commands.splice(0, a.commands.length, ...mapped);
+      if (!a.commands.some((item) => item.id === a.state.selectedCommandId)) {
+        a.state.selectedCommandId = a.commands[0].id;
+      }
+      if (!a.commands.some((item) => item.category === a.state.commandCategory)) {
+        a.state.commandCategory = "全部";
+      }
+      if (showStatus) a.appendStatusEvent("指令表已导入", `${mapped.length} 条指令`);
       a.renderView();
+    } else if (showStatus) {
+      a.appendStatusEvent("指令表为空", "未读取到有效指令");
     }
   }
+
+  window.UUSPACE_LOAD_COMMANDS = loadCommandsMerged;
 
   function setWsUi(connected, detail) {
     const line = $("#wsStatusLine");
@@ -218,7 +286,7 @@
       dot.classList.remove("ok", "warn", "danger");
       dot.classList.add(connected ? "ok" : "warn");
     }
-    text.textContent = connected ? `WS 已连接${detail ? ` ${detail}` : ""}` : detail || "WS 未连接";
+    text.textContent = connected ? detail || "WS 已连接" : detail || "WS 未连接";
   }
 
   function connectWs(wsPath) {
@@ -260,7 +328,7 @@
       console.warn("[realtime] UUSPACE_API 未就绪");
       return;
     }
-    let wsPath = "/ws";
+    let wsPath = "";
     try {
       const res = await fetch("/api/protocol");
       const cfg = await res.json();
@@ -305,10 +373,18 @@
     } catch (e) {
       console.error("[realtime] /api/satellites", e);
       if (sel) sel.innerHTML = `<option value="">卫星列表加载失败</option>`;
+      api().appendStatusEvent(
+        "卫星遥测表加载失败",
+        "请从仓库根目录启动 Python：python tools\\udp_web_server.py --root <项目根>",
+      );
     }
 
     loadCommandsMerged().catch(() => {});
-    connectWs(wsPath);
+    if (wsPath) {
+      connectWs(wsPath);
+    } else {
+      setWsUi(true, "SSE UDP桥接");
+    }
   }
 
   if (document.readyState === "loading") {

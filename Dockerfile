@@ -2,8 +2,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY index.html styles.css app.js ./
+COPY index.html styles.css app.js realtime.js ./
 COPY assets ./assets
+COPY Commad ./Commad
 COPY tools ./tools
 
 EXPOSE 8080/tcp

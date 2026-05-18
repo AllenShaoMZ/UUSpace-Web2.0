@@ -26,12 +26,33 @@ const state = {
   activeSheet: 0,
   activeTableViewId: "",
   tableViews: [],
+  selectedWaveCodes: new Set(),
+  waveDrawerOpen: false,
   tableSearch: "",
+  telemetry: { decimals: {}, columns: {} },
   curveSearch: "",
   curveBuffers: {},
+  pendingCurveCodes: [],
   refreshTimer: null,
+  searchDebounceTimers: {},
+  renameDebounceTimers: {},
   lastViewRefreshAt: 0,
-  channels: new Set(["FW-A-RPM", "FW-B-RPM", "ATT-X", "ATT-Y", "TEMP-CABIN"]),
+  lastUdpEventAt: 0,
+  suppressedUdpEvents: 0,
+  rowsCacheKey: "",
+  rowsCache: [],
+  channels: new Set(),
+  curveViews: [],
+  activeCurveViewId: "",
+  curveLayoutColumns: 1,
+  curveAnimationFrame: null,
+  isComposing: false,
+  pendingCommandId: "",
+  commandResults: {},
+  connectionConfigOpen: false,
+  protocolTestHex: "",
+  protocolDraftRuleId: "",
+  protocolDraftHeader: "",
   favorites: new Set(["FW-A-RPM", "ATT-X", "BAT-VOLT", "TEMP-CABIN"]),
   summaryCollapsed: false,
   chartTick: 0,
@@ -213,6 +234,65 @@ const commands = [
 
 const $ = (selector) => document.querySelector(selector);
 
+function createStore(initialState) {
+  const listeners = new Map();
+  return {
+    state: initialState,
+    set(key, value) {
+      if (Object.is(initialState[key], value)) return;
+      initialState[key] = value;
+      (listeners.get(key) || []).forEach((callback) => callback(value, initialState));
+    },
+    subscribe(keys, callback) {
+      keys.forEach((key) => {
+        if (!listeners.has(key)) listeners.set(key, new Set());
+        listeners.get(key).add(callback);
+      });
+      return () => {
+        keys.forEach((key) => {
+          const bucket = listeners.get(key);
+          if (bucket) bucket.delete(callback);
+        });
+      };
+    },
+  };
+}
+
+const store = createStore(state);
+
+function switchView(viewId) {
+  if (!views.some((view) => view.id === viewId)) return;
+  if (state.activeView === viewId) return;
+  if (state.activeView === "table" && viewId === "curve" && state.selectedWaveCodes.size) {
+    state.pendingCurveCodes = [...new Set([...state.pendingCurveCodes, ...state.selectedWaveCodes])];
+  }
+  if (state.curveAnimationFrame && viewId !== "curve") {
+    cancelAnimationFrame(state.curveAnimationFrame);
+    state.curveAnimationFrame = null;
+  }
+  store.set("activeView", viewId);
+  if (state.refreshTimer) {
+    clearTimeout(state.refreshTimer);
+    state.refreshTimer = null;
+  }
+  state.lastViewRefreshAt = Date.now();
+  renderNavigation();
+  renderView();
+}
+
+function resizeTrendCanvas() {
+  document.querySelectorAll(".trend-canvas").forEach((canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const targetW = Math.max(300, Math.floor(rect.width * dpr));
+    const targetH = Math.max(180, Math.floor(rect.height * dpr));
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
+  });
+}
+
 function init() {
   renderNavigation();
   renderDock();
@@ -221,6 +301,13 @@ function init() {
   bindGlobalActions();
   connectUdpBridge();
   startClock();
+  store.subscribe(["sheetStats", "sheetLiveValues"], () => {
+    if (state.activeView === "table") scheduleUdpViewRefresh();
+  });
+  window.addEventListener("resize", () => {
+    resizeTrendCanvas();
+    if (state.activeView === "curve") renderView();
+  });
 }
 
 function renderNavigation() {
@@ -232,11 +319,9 @@ function renderNavigation() {
     .map((view) => `<button class="workspace-tab ${view.id === state.activeView ? "active" : ""}" data-view="${view.id}" role="tab">${view.label}</button>`)
     .join("");
 
-  document.querySelectorAll("[data-view]").forEach((button) => {
+  document.querySelectorAll(".task-nav [data-view], .workspace-tabs [data-view]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.activeView = button.dataset.view;
-      renderNavigation();
-      renderView();
+      switchView(button.dataset.view);
     });
   });
 }
@@ -275,9 +360,7 @@ function renderDock() {
   document.querySelectorAll("[data-summary-param]").forEach((item) => {
     item.addEventListener("click", () => {
       state.selectedParamCode = item.dataset.summaryParam;
-      state.activeView = "table";
-      renderNavigation();
-      renderView();
+      switchView("table");
     });
   });
 }
@@ -311,39 +394,41 @@ function renderView() {
   bindViewActions();
 
   if (state.activeView === "curve") {
-    requestAnimationFrame(drawTrendChart);
+    resizeTrendCanvas();
+    if (!state.curveAnimationFrame) {
+      state.curveAnimationFrame = requestAnimationFrame(drawTrendChart);
+    }
   }
 }
 
 function renderStatus() {
+  const totalPackets = Number(state.udpBridge.total || 0);
+  const activePorts = (state.udpBridge.portStats || []).filter((item) => Number(item.total || 0) > 0).length;
+  const warningCount = statusEvents.filter((event) => event.type === "warning" || event.type === "danger").length;
   return `
     <div class="view">
       <section class="view-surface mission-card">
         <div class="mission-id">
           <div>
             <h1>${state.missionSatTitle} 地面综测状态总览</h1>
-            <p>围绕连接、协议、遥测表格、实时曲线和指令控制组织工作区，第一眼确认系统是否在线、链路是否稳定、遥测是否异常。</p>
+            <p>连接、遥测、告警和指令状态集中值守，优先暴露需要工程师立刻判断的链路与异常。</p>
           </div>
-          <span class="tag ok">在线值守</span>
+          <span class="tag ${state.udpBridge.connected ? "ok" : state.udpBridge.available ? "warn" : ""}">${state.udpBridge.connected ? "UDP 在线" : state.udpBridge.available ? "等待数据" : "桥接未启动"}</span>
         </div>
-        <div class="orbit-visual" aria-hidden="true">
-          <div class="ground-node">地</div>
-          <div class="sat-node">星</div>
-          <div class="link-line"></div>
-        </div>
+        ${renderPortMatrix()}
         <div class="mission-facts">
           <div class="fact"><span>卫星</span><strong>${state.missionSatTitle}</strong></div>
           <div class="fact"><span>模式</span><strong>在轨测试</strong></div>
-          <div class="fact"><span>链路</span><strong>UDP 主用</strong></div>
-          <div class="fact"><span>协议</span><strong>F0-F7</strong></div>
+          <div class="fact"><span>活跃端口</span><strong>${activePorts}/${protocolRules.length}</strong></div>
+          <div class="fact"><span>累计 UDP</span><strong>${totalPackets}</strong></div>
         </div>
       </section>
 
       <section class="stat-grid">
-        <article class="stat-tile"><span>连接状态</span><strong>3/3</strong><div class="delta">UDP 主用，TCP/串口备用</div></article>
-        <article class="stat-tile"><span>协议规则</span><strong>${protocolRules.length}</strong><div class="delta">包头、包长、校验、Sheet 已配置</div></article>
-        <article class="stat-tile"><span>遥测参数</span><strong>${parameters.length}</strong><div class="delta">重点收藏 ${state.favorites.size} 项</div></article>
-        <article class="stat-tile"><span>刷新速率</span><strong>25fps</strong><div class="delta">Frame ${state.frame}</div></article>
+        <article class="stat-tile ${state.udpBridge.connected ? "ok" : "warn"}"><span>UDP 连接</span><strong>${activePorts}/${protocolRules.length}</strong><div class="delta">端口实时包计数</div></article>
+        <article class="stat-tile"><span>当前帧率</span><strong>25fps</strong><div class="delta">Frame ${state.frame}</div></article>
+        <article class="stat-tile"><span>最近告警</span><strong>${warningCount}</strong><div class="delta ${warningCount ? "danger-text" : ""}">${warningCount ? "需要复核事件流" : "暂无待处理"}</div></article>
+        <article class="stat-tile"><span>遥测参数</span><strong>${getAllTelemetryRows().length}</strong><div class="delta">收藏 ${state.favorites.size} 项</div></article>
       </section>
 
       <section class="mission-grid">
@@ -395,14 +480,14 @@ function renderConnection() {
             <span class="tag ${udp.connected ? "ok" : udp.available ? "warn" : ""}">${udp.connected ? "SSE 已连接" : udp.available ? "等待数据" : "未启动桥接服务"}</span>
           </div>
         </div>
-        <div class="udp-monitor">
+          <div class="udp-monitor">
           <div class="udp-stats">
             ${metric("监听端口", udp.udpPorts && udp.udpPorts.length ? `${udp.udpPorts[0]}-${udp.udpPorts[udp.udpPorts.length - 1]}` : "--")}
             ${metric("累计包数", udp.total)}
             ${metric("最近入口", last ? `端口 ${last.listenPort} / Sheet ${last.sheetIndex}` : "--")}
             ${metric("最近长度", last ? `${last.length} byte` : "--")}
           </div>
-          <div class="source-block">${last ? last.hex : "启动 tools/udp_web_server.py 后，向本机 UDP 7101-7108 发送数据，这里会显示最近包的 HEX。"}</div>
+          <div class="source-block hex-bytes">${renderHexBytes(last ? last.hex : "启动 tools/udp_web_server.py 后，向本机 UDP 7101-7108 发送数据，这里会显示最近包的 HEX。")}</div>
           <div class="port-map">
             ${renderUdpPortStats()}
           </div>
@@ -427,8 +512,17 @@ function renderConnection() {
       <section class="view-surface">
         <div class="view-header">
           <div class="view-title">连接参数<small>面向局域网多工作站，不做传统软件弹窗</small></div>
+          <div class="header-actions">
+            <button class="ghost-button" data-toggle-connection-config>${state.connectionConfigOpen ? "收起编辑" : "编辑配置"}</button>
+          </div>
         </div>
-        <div class="config-grid">
+        <div class="config-summary">
+          <div class="config-field"><span>正在使用的配置</span><strong>UDP 主用 · 7101-7108 · 192.168.11.166</strong></div>
+          <div class="config-field"><span>工作站刷新</span><strong>25fps</strong></div>
+          <div class="config-field"><span>串口参数</span><strong>COM3 / 115200 / 8N1</strong></div>
+          <div class="config-field"><span>心跳阈值</span><strong>3s</strong></div>
+        </div>
+        <div class="config-grid ${state.connectionConfigOpen ? "open" : "collapsed"}">
           <label class="config-field"><span>连接类型</span><select class="field"><option>UDP 主用</option><option>TCP 服务端</option><option>串口采集</option></select></label>
           <label class="config-field"><span>本地端口</span><input class="field" value="7101-7108" /></label>
           <label class="config-field"><span>目标地址</span><input class="field" value="192.168.11.166" /></label>
@@ -443,6 +537,11 @@ function renderConnection() {
 
 function renderProtocol() {
   const selected = protocolRules.find((rule) => rule.id === state.selectedRuleId) || protocolRules[0];
+  if (!state.protocolDraftRuleId) state.protocolDraftRuleId = selected.id;
+  if (!state.protocolDraftHeader) state.protocolDraftHeader = selected.header;
+  const draftHeader = state.protocolDraftRuleId === selected.id ? state.protocolDraftHeader : selected.header;
+  const testHex = state.protocolTestHex.trim();
+  const matchedRule = testHex ? protocolRules.find((rule) => matchPacketHeader(testHex, rule.header)) : null;
   return `
     <div class="view">
       <section class="view-surface">
@@ -458,18 +557,23 @@ function renderProtocol() {
             ${protocolRules
               .map(
                 (rule) => `
-                  <button class="rule-item ${rule.id === selected.id ? "active" : ""}" data-rule="${rule.id}">
+                  <button class="rule-item ${rule.id === selected.id ? "active" : ""} ${matchedRule && matchedRule.id === rule.id ? "matched" : ""}" data-rule="${rule.id}">
                     <strong>${rule.id}</strong>
                     <span>${rule.header} · ${rule.length} byte · Sheet ${rule.sheet}</span>
                   </button>
                 `,
               )
               .join("")}
+            <div class="rule-test">
+              <h3>测试包头匹配</h3>
+              <textarea class="field rule-test-input" data-protocol-test placeholder="粘贴一段 HEX，例如 07 40 AA BB">${escapeAttr(state.protocolTestHex)}</textarea>
+              ${matchedRule ? `<div class="rule-test-result ok">匹配到 ${matchedRule.id} · Sheet ${matchedRule.sheet}</div>` : testHex ? `<div class="rule-test-result warn">未匹配到规则</div>` : `<div class="rule-test-result">输入 HEX 后自动匹配规则</div>`}
+            </div>
           </aside>
           <section class="protocol-form">
             <div class="config-grid">
               <label class="config-field"><span>启用</span><select class="field"><option>${selected.enabled ? "启用" : "停用"}</option><option>启用</option><option>停用</option></select></label>
-              <label class="config-field"><span>包头 HEX</span><input class="field" value="${selected.header}" /></label>
+              <label class="config-field"><span>包头 HEX</span><input class="field" data-protocol-header value="${escapeAttr(draftHeader)}" /></label>
               <label class="config-field"><span>包长 byte</span><input class="field" value="${selected.length}" /></label>
               <label class="config-field"><span>校验方式</span><select class="field"><option>${selected.checksum}</option><option>关闭</option><option>XOR</option><option>SUM</option><option>None</option></select></label>
               <label class="config-field"><span>监听端口</span><input class="field" value="${selected.port}" /></label>
@@ -477,10 +581,12 @@ function renderProtocol() {
               <label class="config-field"><span>协议类型</span><input class="field" value="${selected.type}" /></label>
               <label class="config-field"><span>数值端序</span><select class="field"><option>${selected.endian}</option><option>大端</option><option>小端</option></select></label>
             </div>
-            <div class="source-block">示例帧：
-${selected.header} 00 02 01 7A 22 01 00 0D 22 02 FF EC
-校验：${selected.checksum}
-目标 Sheet：${selected.sheet}</div>
+            <div class="source-block hex-bytes">${renderHexBytes(`${draftHeader} 00 02 01 7A 22 01 00 0D 22 02 FF EC`, normalizeHexTokens(draftHeader).length)}</div>
+            <div class="protocol-preview">
+              <div class="kv"><span>示例帧</span><strong>${draftHeader} 00 02 01 7A 22 01 00 0D 22 02 FF EC</strong></div>
+              <div class="kv"><span>校验</span><strong>${selected.checksum}</strong></div>
+              <div class="kv"><span>目标 Sheet</span><strong>${selected.sheet}</strong></div>
+            </div>
           </section>
         </div>
       </section>
@@ -511,6 +617,79 @@ function getSheetStat(sheetIndex) {
   );
 }
 
+function renderPortMatrix() {
+  return `
+    <div class="port-matrix">
+      ${protocolRules
+        .map((rule) => {
+          const stat = getSheetStat(rule.sheet);
+          const live = Number(stat.total || 0) > 0;
+          return `
+            <div class="port-cell ${live ? "live" : "idle"}">
+              <span>${rule.port}</span>
+              <strong>Sheet ${rule.sheet}</strong>
+              <em>${stat.total || 0} 包</em>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderHexBytes(input, headerLength = 0) {
+  const text = String(input || "").trim();
+  if (!text) return "";
+  return text
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((byte, index) => {
+      const isHex = /^[0-9a-f]{2}$/i.test(byte);
+      const tone = isHex && headerLength && index >= headerLength
+        ? "faint"
+        : isHex
+        ? (parseInt(byte, 16) < 0x40 ? "low" : parseInt(byte, 16) < 0x80 ? "mid" : "high")
+        : "faint";
+      return `<span class="${tone}">${escapeAttr(byte.toUpperCase())}</span>`;
+    })
+    .join(" ");
+}
+
+function renderCommandResult(commandId) {
+  const result = state.commandResults[commandId];
+  if (!result) return "";
+  return `<div class="command-result ${result.ok ? "ok" : "error"}">${result.ok ? "✓" : "×"} ${result.text}</div>`;
+}
+
+function matchPacketHeader(hexText, headerText) {
+  const packet = normalizeHexTokens(hexText);
+  const header = normalizeHexTokens(headerText);
+  if (!packet.length || !header.length || packet.length < header.length) return false;
+  return header.every((token, index) => packet[index] === token);
+}
+
+function normalizeHexTokens(text) {
+  return String(text || "")
+    .trim()
+    .split(/[\s,]+/)
+    .map((token) => token.toUpperCase())
+    .filter((token) => /^[0-9A-F]{2}$/.test(token));
+}
+
+function estimatePortRate(listenPort) {
+  const history = state.udpBridge.history || [];
+  const now = Date.now();
+  const windowMs = 5000;
+  const samples = history.filter((packet) => Number(packet.listenPort) === Number(listenPort) && now - Date.parse(packet.time || now) <= windowMs);
+  return samples.length / (windowMs / 1000);
+}
+
+function isPortStale(item) {
+  if (!item || !item.lastTime) return true;
+  const elapsed = Date.now() - Date.parse(item.lastTime);
+  return !Number.isFinite(elapsed) || elapsed > 4000;
+}
+
 function telemetryStatus(value) {
   if (!value) return "正常";
   if (value === "遥测异常" || /异常|告警|超限|错误/.test(value)) return "告警";
@@ -518,9 +697,51 @@ function telemetryStatus(value) {
   return value || "正常";
 }
 
+function getParamDecimals(paramOrCode, definitionDecimals) {
+  if (definitionDecimals != null && definitionDecimals !== "") return Number(definitionDecimals);
+  const code = typeof paramOrCode === "string" ? paramOrCode : paramOrCode?.code;
+  const fromState = code != null ? state.telemetry.decimals[code] : undefined;
+  if (fromState != null && fromState !== "") return Number(fromState);
+  const fromParam = typeof paramOrCode === "object" && paramOrCode ? paramOrCode.decimals : undefined;
+  if (fromParam != null && fromParam !== "") return Number(fromParam);
+  return -1;
+}
+
+function formatNumericTelemetry(value, decimals) {
+  const fn = window.formatTelemetryNumber;
+  if (typeof fn === "function") return fn(value, { decimals: getParamDecimals(null, decimals) });
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return String(value);
+}
+
+function getTelemetryDisplayValue(live, definitionDecimals) {
+  const rawStatus = live && live.status != null ? String(live.status).trim() : "";
+  const normalizedStatus = rawStatus ? telemetryStatus(rawStatus) : "等待";
+  if (rawStatus) {
+    return { value: rawStatus, status: normalizedStatus };
+  }
+  if (live && Number.isFinite(Number(live.value))) {
+    return {
+      value: formatNumericTelemetry(live.value, definitionDecimals ?? live.decimals),
+      status: "正常",
+    };
+  }
+  const text = live ? String(live.valueText ?? "").trim() : "";
+  if (!text) return { value: "—", status: "关注" };
+  const parsed = Number(text);
+  if (Number.isFinite(parsed)) {
+    return {
+      value: formatNumericTelemetry(parsed, definitionDecimals ?? live?.decimals),
+      status: "正常",
+    };
+  }
+  return { value: text, status: "正常" };
+}
+
 function mapDefinitionToRow(definition, sheetIndex) {
   const live = state.sheetLiveValues[String(sheetIndex)] && state.sheetLiveValues[String(sheetIndex)][definition.code];
-  const statusText = live ? telemetryStatus(live.status) : "等待";
+  const display = getTelemetryDisplayValue(live, definition.decimals);
   return {
     index: definition.index,
     serialNo: definition.serialNo,
@@ -530,11 +751,11 @@ function mapDefinitionToRow(definition, sheetIndex) {
     name: definition.name || definition.code,
     group: `Sheet ${sheetIndex}`,
     frame: `S${sheetIndex}`,
-    value: live ? live.valueText : "—",
+    value: display.value,
     unit: definition.unit || "",
-    status: statusText === "等待" ? "关注" : statusText,
+    status: display.status,
     raw: live ? String(live.raw) : "—",
-    hex: live && live.raw != null ? Number(live.raw).toString(16).toUpperCase() : "—",
+    hex: live ? formatRawHex(live.raw) : "—",
     formula: definition.formula,
     dataType: definition.dataType,
     normalValue: definition.normalValue,
@@ -585,10 +806,28 @@ function getSelectedTelemetryParam() {
   return getActiveTelemetryRows().find((item) => item.code === state.selectedParamCode) || null;
 }
 
+function getSelectedWaveRows() {
+  const rowsByCode = new Map(getAllTelemetryRows().map((row) => [row.code, row]));
+  return [...state.selectedWaveCodes].map((code) => rowsByCode.get(code)).filter(Boolean);
+}
+
+function limitRows(rows, limit) {
+  return rows.length > limit ? rows.slice(0, limit) : rows;
+}
+
 function getAllTelemetryRows() {
+  const defStamp = Object.keys(state.sheetDefinitions)
+    .map((key) => `${key}:${(state.sheetDefinitions[key] || []).length}`)
+    .join("|");
+  const cacheKey = `${defStamp}::${state.udpBridge.total}::${parameters.length}`;
+  if (state.rowsCacheKey === cacheKey && state.rowsCache.length) {
+    return state.rowsCache;
+  }
   const rows = [];
   protocolRules.forEach((rule) => rows.push(...getTelemetryRowsForSheet(rule.sheet)));
-  return rows.length ? rows : parameters;
+  state.rowsCache = rows.length ? rows : parameters;
+  state.rowsCacheKey = cacheKey;
+  return state.rowsCache;
 }
 
 function buildCurveChannelGroups() {
@@ -601,6 +840,7 @@ function buildCurveChannelGroups() {
           return [row.code, row.name, row.group, row.waveNo].filter(Boolean).some((value) => String(value).toLowerCase().includes(keyword));
         })
         .filter((row) => row.code)
+        .slice(0, keyword ? 160 : 80)
         .map((row) => ({
           code: row.code,
           name: `${row.code} ${row.name}`,
@@ -617,6 +857,16 @@ function buildCurveChannelGroups() {
 function parseNumber(value) {
   const num = parseFloat(String(value).replace(/[^\d.+\-eE]/g, ""));
   return Number.isFinite(num) ? num : 0;
+}
+
+function hasMeaningfulText(value) {
+  const text = String(value ?? "").trim();
+  return !!text && text !== "—" && text !== "--";
+}
+
+function renderParamValueCell(param) {
+  const valueText = formatTelemetryValue(param);
+  return `<div>${valueText}</div>`;
 }
 
 function colorForCode(code) {
@@ -638,18 +888,113 @@ function pushCurvePoint(code, value, time) {
   }
 }
 
-function getCurveSeries() {
+function getStagedCurveCodes() {
+  return [...new Set([...state.pendingCurveCodes, ...state.selectedWaveCodes, ...state.channels].filter(Boolean))];
+}
+
+function getAllCurveViewCodes() {
+  return [...new Set(state.curveViews.flatMap((view) => view.codes || []).filter(Boolean))];
+}
+
+function clearCurveSelections() {
+  state.pendingCurveCodes = [];
+  state.selectedWaveCodes.clear();
+  state.channels.clear();
+}
+
+function removeStagedCurveCode(code) {
+  state.channels.delete(code);
+  state.selectedWaveCodes.delete(code);
+  state.pendingCurveCodes = state.pendingCurveCodes.filter((item) => item !== code);
+}
+
+function removeCurveCode(viewId, code) {
+  state.curveViews = state.curveViews
+    .map((view) => view.id === viewId ? { ...view, codes: (view.codes || []).filter((item) => item !== code) } : view)
+    .filter((view) => (view.codes || []).length || view.id === state.activeCurveViewId);
+}
+
+function getCurveSeries(codes = null) {
   const rowsByCode = new Map(getAllTelemetryRows().map((row) => [row.code, row]));
-  return [...state.channels].map((code, index) => {
-    const row = rowsByCode.get(code) || telemetryGroups.flatMap((group) => group.items).find((item) => item.code === code) || { code, name: code, value: 0 };
+  const flatTelemetry = telemetryGroups.flatMap((group) => group.items);
+  const sourceCodes = Array.isArray(codes) ? codes : getAllCurveViewCodes();
+  const codeList = [...new Set(sourceCodes.filter(Boolean))];
+  if (!codeList.length && !Array.isArray(codes)) codeList.push(...getStagedCurveCodes());
+  return codeList.map((code) => {
+    const row = rowsByCode.get(code) || flatTelemetry.find((item) => item.code === code) || { code, name: code, value: "—" };
     const buffer = state.curveBuffers[code] || [];
+    const lastPoint = buffer.length ? buffer[buffer.length - 1] : null;
+    const rawText = String(row.value ?? "").trim();
+    const numericFromRow = parseFloat(rawText.replace(/[^\d.+\-eE]/g, ""));
+    const rowHasNumericValue = Number.isFinite(numericFromRow);
+    const latestValue = lastPoint ? lastPoint.value : (rowHasNumericValue ? numericFromRow : 0);
+    const latestUnit = row.unit || "";
+    const latestText = buffer.length
+      ? `${formatValue(latestValue)}${latestUnit ? ` ${latestUnit}` : ""}`
+      : rowHasNumericValue
+        ? `${formatValue(latestValue)}${latestUnit ? ` ${latestUnit}` : ""}`
+        : hasMeaningfulText(rawText)
+          ? rawText
+      : "等待数据";
     return {
       code,
       name: row.name || code,
+      unit: latestUnit,
       color: row.color || colorForCode(code),
-      points: buffer.length ? buffer.map((point) => point.value) : syntheticPoints(index).map((point) => point * (index + 1)),
+      points: buffer.map((point) => point.value),
+      latestValue,
+      latestText,
+      hasData: buffer.length > 0,
     };
   });
+}
+
+function getCurveViews() {
+  return state.curveViews;
+}
+
+function createCurveView(codes = []) {
+  const uniqueCodes = [...new Set((codes || []).filter(Boolean))];
+  const id = `curve-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+  const view = { id, name: `曲线页面 ${state.curveViews.length + 1}`, codes: uniqueCodes };
+  state.curveViews = [...state.curveViews, view];
+  state.activeCurveViewId = id;
+  return view;
+}
+
+function addCurveView(codes) {
+  const uniqueCodes = [...new Set((codes || []).filter(Boolean))];
+  if (!uniqueCodes.length) return null;
+  const activeView = state.curveViews.find((view) => view.id === state.activeCurveViewId);
+  if (activeView && !(activeView.codes || []).length) {
+    activeView.codes = uniqueCodes;
+    state.activeCurveViewId = activeView.id;
+    return activeView;
+  }
+  return createCurveView(uniqueCodes);
+}
+
+function renderCurvePanel(view, index) {
+  const series = getCurveSeriesForCodes(view.codes);
+  const viewId = escapeAttr(view.id);
+  return `
+    <article class="view-surface chart-wrap curve-panel ${view.id === state.activeCurveViewId ? "active" : ""}" data-curve-view="${viewId}">
+      <div class="chart-meta">
+        <input class="inline-name-input" data-rename-curve="${viewId}" value="${escapeAttr(view.name || `曲线页面 ${index + 1}`)}" aria-label="修改曲线页面名称" />
+        <span>${series.length} 通道</span>
+      </div>
+      <canvas class="trend-canvas" data-curve-canvas="${viewId}" width="1200" height="420"></canvas>
+      <div class="curve-panel-actions">
+        ${series.map((item) => `<span class="curve-chip"><i style="background:${item.color}"></i>${escapeAttr(item.code)}<button type="button" data-curve-code-view="${viewId}" data-remove-curve-code="${escapeAttr(item.code)}" aria-label="移除 ${escapeAttr(item.code)}">×</button></span>`).join("")}
+        ${series.length ? "" : `<span class="curve-chip empty">空白页面</span>`}
+        <button class="send-mini" data-remove-curve-view="${viewId}">删除页面</button>
+      </div>
+    </article>
+  `;
+}
+
+function getCurveSeriesForCodes(codes) {
+  return getCurveSeries(codes || []);
 }
 
 function syntheticPoints(seriesIndex) {
@@ -661,11 +1006,11 @@ function syntheticPoints(seriesIndex) {
   });
 }
 
-function normalizePoints(points) {
-  if (!points.length) return syntheticPoints(0);
+function normalizePoints(points, minValue = null, maxValue = null) {
+  if (!points.length) return [];
   if (points.length === 1) return Array.from({ length: 80 }, () => 0.5);
-  const min = Math.min(...points);
-  const max = Math.max(...points);
+  const min = Number.isFinite(minValue) ? minValue : Math.min(...points);
+  const max = Number.isFinite(maxValue) ? maxValue : Math.max(...points);
   const span = max - min || Math.max(Math.abs(max), 1);
   const normalized = points.map((value) => 0.18 + ((value - min) / span) * 0.64);
   if (normalized.length >= 80) return normalized.slice(-80);
@@ -676,7 +1021,7 @@ function normalizePoints(points) {
 function renderTelemetryTable() {
   const activeRows = getActiveTelemetryRows();
   const sourceRows = activeRows.length ? activeRows : (state.liveTelemetry.length ? state.liveTelemetry : parameters);
-  const rows = sourceRows.filter((param) => {
+  const filteredRows = sourceRows.filter((param) => {
     const keyword = state.tableSearch.trim().toLowerCase();
     const matchText =
       !keyword ||
@@ -687,17 +1032,18 @@ function renderTelemetryTable() {
     if (state.dataFilter === "收藏") return state.favorites.has(param.code);
     return matchText;
   });
+  const rows = limitRows(filteredRows, state.tableSearch ? 320 : 160);
   const sheetStat = getSheetStat(state.activeSheet);
   const selectedView = state.tableViews.find((view) => view.id === state.activeTableViewId);
+  const selectedCodesCount = state.selectedWaveCodes.size;
 
   return `
     <div class="view">
-      <section class="view-surface">
+      <section class="view-surface table-surface">
         <div class="view-header">
-          <div class="view-title">遥测表格<small>端口 7101-7108 分别对应 Sheet0-Sheet7，支持刷新可视化、添加表格和添加曲线</small></div>
+          <div class="view-title">遥测表格<small>端口 7101-7108 分别对应 Sheet0-Sheet7，表格选波道后可到遥测曲线页添加曲线</small></div>
           <div class="header-actions">
             <button class="ghost-button" data-add-table>添加表格</button>
-            <button class="ghost-button" data-add-curve>添加曲线</button>
             <button class="ghost-button" data-refresh-defs>刷新定义</button>
           </div>
         </div>
@@ -733,46 +1079,45 @@ function renderTelemetryTable() {
             <button class="segment ${!state.activeTableViewId ? "active" : ""}" data-table-view="">整表</button>
             ${state.tableViews.map((view) => `<button class="segment ${state.activeTableViewId === view.id ? "active" : ""}" data-table-view="${view.id}">${view.name}</button>`).join("")}
           </div>
+          ${selectedView ? `<input class="inline-name-input" data-rename-table="${selectedView.id}" value="${escapeAttr(selectedView.name)}" aria-label="修改表格名称" />` : ""}
+          <button class="ghost-button" data-toggle-wave-drawer>${state.waveDrawerOpen ? "收起波道" : "已选波道"} ${selectedCodesCount}</button>
         </div>
         <div class="data-grid">
-          <aside class="favorite-rail">
-            <h3>快捷参数</h3>
+          <aside class="favorite-rail wave-select-rail ${state.waveDrawerOpen ? "open" : "collapsed"}">
+            <h3>已选波道</h3>
             <div class="favorite-list">
-              ${sourceRows
-                .filter((param) => state.favorites.has(param.code) || state.channels.has(param.code))
-                .slice(0, 24)
-                .map((param) => `<div class="favorite-item" data-param-card="${param.code}"><span>★ ${param.name}</span><strong>${param.value}${param.unit}</strong></div>`)
-                .join("")}
+              ${getSelectedWaveRows()
+                .map((param) => `<div class="favorite-item" data-param-card="${param.code}"><span>${param.code}</span><strong>${param.name}</strong></div>`)
+                .join("") || `<div class="empty-hint">勾选左侧表格里的波道后，可以添加表格，或切到遥测曲线页添加曲线。</div>`}
             </div>
           </aside>
           <section class="table-wrap">
-            <h3>Sheet ${state.activeSheet} 遥测大表 <small>${rows.length}/${sourceRows.length} 行</small></h3>
+            <h3 class="table-wrap-title">Sheet ${state.activeSheet} 遥测大表 <small>${rows.length}/${filteredRows.length} 行${filteredRows.length > rows.length ? "，输入搜索可缩小范围" : ""}</small></h3>
+            <div class="table-scroll" aria-label="遥测参数列表">
             <table class="param-table">
               <thead>
-                <tr><th style="width:46px"></th><th>序号</th><th>路序</th><th>参数代号</th><th>参数名称</th><th>当前值</th><th>单位</th><th>状态</th><th>十六进制</th><th>公式</th><th>类型</th></tr>
+                <tr><th style="width:54px">选择</th><th>参数代号</th><th>参数名称</th><th>当前值</th><th>十六进制</th><th>单位</th></tr>
               </thead>
               <tbody>
                 ${rows
                   .map(
                     (param) => `
-                      <tr class="${param.code === state.selectedParamCode ? "selected-row" : ""} ${param.updated ? "fresh-row" : ""}" data-param-row="${param.code}">
-                        <td><button class="star-button ${state.favorites.has(param.code) ? "active" : ""}" data-fav="${param.code}">★</button></td>
-                        <td>${param.serialNo || param.index + 1 || ""}</td>
-                        <td>${param.waveNo || ""}</td>
+                      <tr class="${param.code === state.selectedParamCode ? "selected-row" : ""} ${param.updated ? "fresh-row" : ""} ${param.status === "告警" ? "alert-row" : ""}" data-param-row="${param.code}">
+                        <td data-wave-cell><input class="wave-check" type="checkbox" data-wave-select="${param.code}" ${state.selectedWaveCodes.has(param.code) ? "checked" : ""} /></td>
                         <td>${param.code}</td>
                         <td>${param.name}</td>
-                        <td>${param.value}${param.unit ? ` ${param.unit}` : ""}</td>
+                        <td data-param-value>
+                          ${renderParamValueCell(param)}
+                        </td>
+                        <td data-param-hex>${param.hex || param.raw}</td>
                         <td>${param.unit || ""}</td>
-                        <td><span class="tag ${param.status === "告警" ? "danger" : param.status === "关注" ? "warn" : "ok"}">${param.status}</span></td>
-                        <td>${param.raw}</td>
-                        <td>${param.formula || ""}</td>
-                        <td>${param.dataType || ""}</td>
                       </tr>
                     `,
                   )
                   .join("")}
               </tbody>
             </table>
+            </div>
           </section>
         </div>
       </section>
@@ -782,12 +1127,38 @@ function renderTelemetryTable() {
 
 function renderCurve() {
   const channelRows = buildCurveChannelGroups();
+  const stagedCodes = getStagedCurveCodes();
+  const stagedCodeSet = new Set(stagedCodes);
+  const stagedChannels = getCurveSeriesForCodes(stagedCodes);
+  const curveViews = getCurveViews();
+  const plottedCodes = getAllCurveViewCodes();
+  const layoutColumns = curveViews.length <= 1 ? 1 : state.curveLayoutColumns;
+  const activeCurveView = curveViews.find((view) => view.id === state.activeCurveViewId) || curveViews[0] || null;
   return `
-    <div class="view split-grid">
+    <div class="view split-grid curve-view">
       <section class="view-surface channel-picker">
         <div class="view-header compact-head">
-          <div class="view-title">曲线通道<small>可从遥测表格添加，也可在这里勾选 Sheet 参数</small></div>
-          <button class="ghost-button" data-add-active-sheet-curve>添加当前 Sheet</button>
+          <div class="view-title">曲线通道<small>${activeCurveView ? `当前页面：${activeCurveView.name || "未命名页面"}` : "先选择波道，再添加曲线页面"}</small></div>
+          <div class="header-actions">
+            <button class="primary-button" data-add-curve>添加曲线</button>
+          </div>
+        </div>
+        <div class="selected-channel-list">
+          <h3>待添加波道</h3>
+          ${stagedChannels.length
+            ? stagedChannels
+                .map(
+                  (item) => `
+                    <div class="selected-channel">
+                      <span style="background:${item.color}"></span>
+                      <strong>${item.code}</strong>
+                      <em>${item.latestText}</em>
+                      <button class="send-mini" data-remove-channel="${item.code}">删除</button>
+                    </div>
+                  `,
+                )
+                .join("")
+            : `<div class="empty-hint">还没有待添加波道。可以从遥测表格勾选后切到这里，也可以在下方通道列表直接勾选。</div>`}
         </div>
         <input class="search-box" id="channelSearch" value="${escapeAttr(state.curveSearch)}" placeholder="搜索通道、代号、Sheet" />
         <div class="channel-groups">
@@ -801,7 +1172,7 @@ function renderCurve() {
                       (item) => `
                         <label class="check-row" data-channel-row="${item.code}">
                           <span>${item.name}</span>
-                          <input type="checkbox" data-channel="${item.code}" ${state.channels.has(item.code) ? "checked" : ""} />
+                          <input type="checkbox" data-channel="${item.code}" ${stagedCodeSet.has(item.code) ? "checked" : ""} />
                         </label>
                       `,
                     )
@@ -814,26 +1185,28 @@ function renderCurve() {
       </section>
 
       <section class="trend-stack">
-        <article class="view-surface chart-wrap">
-          <div class="chart-meta">
-            <span>实时曲线区 / Mission 风格低疲劳曲线</span>
-            <span>25fps · ${state.channels.size} 通道</span>
+        <div class="curve-workbar">
+          <div class="view-title">曲线页面<small>${curveViews.length} 个页面 · ${plottedCodes.length} 个通道</small></div>
+          <div class="header-actions">
+            <button class="ghost-button" data-create-curve-view>新建页面</button>
+            <button class="ghost-button" data-clear-curves>清空曲线</button>
+            <div class="segmented">
+              ${[1, 2, 3].map((count) => `<button class="segment ${state.curveLayoutColumns === count ? "active" : ""}" data-curve-layout="${count}">${count}列</button>`).join("")}
+            </div>
           </div>
-          <canvas id="trendCanvas" width="1200" height="420"></canvas>
-        </article>
-        <article class="view-surface">
-          <div class="view-header">
-            <div class="view-title">当前值卡片流<small>曲线下方直接看当前值</small></div>
-          </div>
-          <div class="value-strip">${valueCards()}</div>
-        </article>
+        </div>
+        <div class="curve-grid columns-${layoutColumns}">
+          ${curveViews.length
+            ? curveViews.map((view, index) => renderCurvePanel(view, index)).join("")
+            : `<article class="view-surface chart-wrap empty-curve-panel"><div class="empty-hint">还没有曲线页面。选择波道后点“添加曲线”，或先点“新建页面”建立空白页面。</div></article>`}
+        </div>
       </section>
     </div>
   `;
 }
 
 function renderCommandCenter() {
-  const categories = ["全部", "星上指令", "动力学指令", "参数上注"];
+  const categories = ["全部", ...new Set(commands.map((command) => command.category || "星上指令"))];
   const filtered = commands.filter((command) => {
     const keyword = state.commandFilter.trim().toLowerCase();
     const matchCategory = state.commandCategory === "全部" || command.category === state.commandCategory;
@@ -846,18 +1219,19 @@ function renderCommandCenter() {
     return matchCategory && matchText;
   });
 
+  const selected = commands.find((c) => c.id === state.selectedCommandId) || null;
   return `
-    <div class="view">
+    <div class="view split-grid">
       <section class="view-surface">
         <div class="view-header">
-          <div class="view-title">指令控制<small>卡片流 + 右侧详情，不做旧软件的左右表单界面</small></div>
+          <div class="view-title">指令控制<small>卡片流 + 右侧详情，支持查看指令源码</small></div>
           <div class="header-actions">
-            <button class="ghost-button">导入指令表</button>
-            <button class="primary-button">发送确认</button>
+            <button class="ghost-button" data-import-commands>导入指令表</button>
+            <button class="primary-button" data-send-selected>发送选中</button>
           </div>
         </div>
         <div class="command-toolbar">
-          <input class="search-box" id="commandSearch" value="${state.commandFilter}" placeholder="搜索 K2001、飞轮、节点、上注" />
+          <input class="search-box" id="commandSearch" value="${escapeAttr(state.commandFilter)}" placeholder="搜索 K2001、飞轮、节点、上注" />
           <div class="segmented">
             ${categories.map((category) => `<button class="segment ${state.commandCategory === category ? "active" : ""}" data-command-category="${category}">${category}</button>`).join("")}
           </div>
@@ -872,15 +1246,32 @@ function renderCommandCenter() {
                     <span class="tag accent">${command.category}</span>
                   </header>
                   <p>${command.name}</p>
-                  <p>${command.desc}</p>
                   <footer>
                     <span class="tag">UDP:${command.port}</span>
-                    <button class="send-mini" data-send="${command.id}">发送</button>
+                    <button class="send-mini ${state.pendingCommandId === command.id ? "pending" : ""}" data-send="${command.id}">${state.pendingCommandId === command.id ? "确认发送" : "发送"}</button>
                   </footer>
+                  ${renderCommandResult(command.id)}
                 </article>
               `,
             )
             .join("")}
+        </div>
+      </section>
+
+      <section class="view-surface command-detail">
+        <div class="view-header">
+          <div class="view-title">指令详情<small>选中卡片可在此查看完整字段与源码</small></div>
+        </div>
+        <div style="padding:12px;">
+          ${selected ? `
+            <div class="detail-actions"><button class="primary-button" data-send="${selected.id}">立即发送</button></div>
+            <h3>${selected.id} · ${selected.name}</h3>
+            <div class="kv"><span>类别</span><strong>${selected.category}</strong></div>
+            <div class="kv"><span>节点</span><strong>${selected.node} · ${selected.target}:${selected.port}</strong></div>
+            <div class="kv"><span>类型</span><strong>${selected.type}</strong></div>
+            <div style="margin-top:12px;"><strong>说明</strong><div style="color:var(--muted);margin-top:6px">${selected.desc || "-"}</div></div>
+            <div style="margin-top:12px"><strong>指令包（HEX）</strong><pre style="background:rgba(0,0,0,0.2);padding:8px;border-radius:6px;color:#b9c6ff;overflow:auto">${selected.packet}</pre></div>
+          ` : `<div class="empty-hint">请选择一个指令卡片以查看源码。</div>`}
         </div>
       </section>
     </div>
@@ -888,174 +1279,294 @@ function renderCommandCenter() {
 }
 
 function bindViewActions() {
-  document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.activeView = button.dataset.viewShortcut;
-      renderNavigation();
-      renderView();
-    });
-  });
+  const stage = $("#stage");
+  if (!stage) return;
+  if (stage.dataset.uuspaceBound === "true") return;
+  stage.dataset.uuspaceBound = "true";
 
-  document.querySelectorAll("[data-rule]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.selectedRuleId = button.dataset.rule;
-      renderView();
-    });
-  });
+  const liveFilters = {
+    paramSearch: createLiveFilter("paramSearch", "tr[data-param-row]", "tableSearch", 300),
+    commandSearch: createLiveFilter("commandSearch", "article[data-command-card]", "commandFilter", 300),
+    channelSearch: createLiveFilter("channelSearch", "[data-channel-row]", "curveSearch", 300),
+  };
 
-  document.querySelectorAll("[data-data-filter]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.dataFilter = button.dataset.dataFilter;
-      renderView();
-    });
-  });
-
-  document.querySelectorAll("[data-sheet]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.activeSheet = Number(button.dataset.sheet);
+  stage.addEventListener("click", (ev) => {
+    if (ev.target.closest && (ev.target.closest("[data-wave-select]") || ev.target.closest("[data-wave-cell]"))) {
+      return; // let checkbox cell change handler manage selection, avoid re-render before change event
+    }
+    const btn = ev.target.closest && ev.target.closest("[data-sheet],[data-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-view],[data-curve-layout],[data-fav],[data-toggle-wave-drawer],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
+    if (!btn) return;
+    if (btn.dataset.viewShortcut) return switchView(btn.dataset.viewShortcut);
+    if (btn.dataset.rule) {
+      state.selectedRuleId = btn.dataset.rule;
+      return renderView();
+    }
+    if (btn.dataset.dataFilter) {
+      state.dataFilter = btn.dataset.dataFilter;
+      return renderView();
+    }
+    if (btn.dataset.sheet) {
+      state.activeSheet = Number(btn.dataset.sheet);
       state.activeTableViewId = "";
       const rows = getActiveTelemetryRows();
       if (rows[0]) state.selectedParamCode = rows[0].code;
-      renderView();
-    });
-  });
-
-  document.querySelectorAll("[data-table-view]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.activeTableViewId = button.dataset.tableView;
+      return renderView();
+    }
+    if (btn.dataset.tableView !== undefined) {
+      state.activeTableViewId = btn.dataset.tableView;
       const rows = getActiveTelemetryRows();
       if (rows[0]) state.selectedParamCode = rows[0].code;
-      renderView();
-    });
-  });
-
-  const addTableButton = document.querySelector("[data-add-table]");
-  if (addTableButton) {
-    addTableButton.addEventListener("click", () => {
-      const rows = getFilteredTelemetryRows().slice(0, 80);
+      return renderView();
+    }
+    if (btn.dataset.addTable !== undefined) {
+      const rows = getSelectedWaveRows();
+      if (!rows.length) return appendStatusEvent("请先选择波道", "勾选表格左侧的波道后再添加表格");
       const id = `table-${Date.now()}`;
-      state.tableViews.push({
-        id,
-        name: `表格${state.tableViews.length + 1}`,
-        sheet: state.activeSheet,
-        codes: rows.map((row) => row.code),
-      });
+      state.tableViews.push({ id, name: `表格${state.tableViews.length + 1}`, sheet: state.activeSheet, codes: rows.map((r) => r.code) });
       state.activeTableViewId = id;
+      state.selectedWaveCodes.clear();
       appendStatusEvent(`已添加 Sheet ${state.activeSheet} 自定义表格`, `${rows.length} 个遥测参数`);
-      renderView();
-    });
-  }
-
-  const addCurveButton = document.querySelector("[data-add-curve]");
-  if (addCurveButton) {
-    addCurveButton.addEventListener("click", () => {
-      const selected = getSelectedTelemetryParam();
-      const rows = selected ? [selected] : getFilteredTelemetryRows().slice(0, 6);
-      rows.forEach((row) => state.channels.add(row.code));
-      state.activeView = "curve";
-      appendStatusEvent("已添加遥测曲线", rows.map((row) => row.code).join(", "));
-      renderNavigation();
-      renderView();
-    });
-  }
-
-  const refreshDefsButton = document.querySelector("[data-refresh-defs]");
-  if (refreshDefsButton) {
-    refreshDefsButton.addEventListener("click", () => {
-      loadTelemetryDefinitions(true);
-    });
-  }
-
-  document.querySelectorAll("[data-fav]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const code = button.dataset.fav;
+      return renderView();
+    }
+    if (btn.dataset.addCurve !== undefined) {
+      if (state.activeView !== "curve") {
+        state.pendingCurveCodes = getSelectedWaveRows().map((row) => row.code);
+        if (!state.pendingCurveCodes.length) return appendStatusEvent("请先选择波道", "勾选表格左侧的波道后再到曲线页添加曲线");
+        state.selectedWaveCodes.clear();
+        appendStatusEvent("波道已准备到曲线页", state.pendingCurveCodes.join(", "));
+        return switchView("curve");
+      }
+      const codes = getStagedCurveCodes();
+      if (!codes.length) return appendStatusEvent("请先选择曲线通道", "在左侧通道列表勾选后再添加曲线");
+      const target = addCurveView(codes);
+      appendStatusEvent(target ? `已添加到 ${target.name}` : "已添加曲线页面", codes.join(", "));
+      clearCurveSelections();
+      return renderView();
+    }
+    if (btn.dataset.createCurveView !== undefined) {
+      const view = createCurveView([]);
+      appendStatusEvent("已新建曲线页面", view.name);
+      return renderView();
+    }
+    if (btn.dataset.clearCurves !== undefined) {
+      state.curveViews = [];
+      state.activeCurveViewId = "";
+      clearCurveSelections();
+      state.curveBuffers = {};
+      appendStatusEvent("曲线通道已清空");
+      return renderView();
+    }
+    if (btn.dataset.commandCard) {
+      state.selectedCommandId = btn.dataset.commandCard;
+      return renderView();
+    }
+    if (btn.dataset.paramRow || btn.dataset.paramCard) {
+      selectTelemetryParam(btn.dataset.paramRow || btn.dataset.paramCard);
+      return;
+    }
+    if (btn.dataset.removeChannel) {
+      removeStagedCurveCode(btn.dataset.removeChannel);
+      return renderView();
+    }
+    if (btn.dataset.removeCurveCode) {
+      const viewId = btn.dataset.curveCodeView;
+      const code = btn.dataset.removeCurveCode;
+      if (!viewId || !code) return;
+      state.activeCurveViewId = viewId;
+      removeCurveCode(viewId, code);
+      appendStatusEvent("已移除曲线通道", code);
+      return renderView();
+    }
+    if (btn.dataset.removeCurveView) {
+      state.curveViews = state.curveViews.filter((view) => view.id !== btn.dataset.removeCurveView);
+      if (state.activeCurveViewId === btn.dataset.removeCurveView) {
+        state.activeCurveViewId = state.curveViews[0] ? state.curveViews[0].id : "";
+      }
+      appendStatusEvent("已删除曲线页面", btn.dataset.removeCurveView);
+      return renderView();
+    }
+    if (btn.dataset.curveView) {
+      state.activeCurveViewId = btn.dataset.curveView;
+      return renderView();
+    }
+    if (btn.dataset.curveLayout) {
+      state.curveLayoutColumns = Number(btn.dataset.curveLayout) || 1;
+      return renderView();
+    }
+    if (btn.dataset.renameTable !== undefined) return;
+    if (btn.dataset.renameCurve !== undefined) return;
+    if (btn.dataset.fav) {
+      ev.stopPropagation();
+      const code = btn.dataset.fav;
       if (state.favorites.has(code)) state.favorites.delete(code);
       else state.favorites.add(code);
-      renderView();
-    });
-  });
-
-  document.querySelectorAll("[data-param-row], [data-param-card]").forEach((row) => {
-    row.addEventListener("click", () => {
-      state.selectedParamCode = row.dataset.paramRow || row.dataset.paramCard;
-      renderView();
-    });
-  });
-
-  document.querySelectorAll("[data-channel]").forEach((input) => {
-    input.addEventListener("change", () => {
-      if (input.checked) state.channels.add(input.dataset.channel);
-      else state.channels.delete(input.dataset.channel);
-      renderView();
-    });
-  });
-
-  const addActiveSheetCurve = document.querySelector("[data-add-active-sheet-curve]");
-  if (addActiveSheetCurve) {
-    addActiveSheetCurve.addEventListener("click", () => {
-      const rows = getTelemetryRowsForSheet(state.activeSheet).slice(0, 12);
-      rows.forEach((row) => state.channels.add(row.code));
-      appendStatusEvent(`已添加 Sheet ${state.activeSheet} 曲线组`, rows.map((row) => row.code).join(", "));
-      renderView();
-    });
-  }
-
-  const channelSearch = $("#channelSearch");
-  if (channelSearch) {
-    channelSearch.addEventListener("input", () => {
-      state.curveSearch = channelSearch.value;
-      filterRows("[data-channel-row]", channelSearch.value, "flex");
-    });
-  }
-
-  const paramSearch = $("#paramSearch");
-  if (paramSearch) {
-    paramSearch.addEventListener("input", () => {
-      state.tableSearch = paramSearch.value;
-      renderView();
-      const nextInput = $("#paramSearch");
-      if (nextInput) {
-        nextInput.focus();
-        nextInput.setSelectionRange(nextInput.value.length, nextInput.value.length);
+      return renderView();
+    }
+    if (btn.dataset.toggleWaveDrawer !== undefined) {
+      state.waveDrawerOpen = !state.waveDrawerOpen;
+      return renderView();
+    }
+    if (btn.dataset.toggleConnectionConfig !== undefined) {
+      state.connectionConfigOpen = !state.connectionConfigOpen;
+      return renderView();
+    }
+    if (btn.dataset.sendSelected !== undefined) {
+      ev.stopPropagation();
+      if (!state.selectedCommandId) {
+        appendStatusEvent("请选择要发送的指令", "当前没有选中指令卡片");
+        return;
       }
-    });
+      requestCommandSend(state.selectedCommandId);
+      return;
+    }
+    if (btn.dataset.send) {
+      ev.stopPropagation();
+      state.selectedCommandId = btn.dataset.send;
+      requestCommandSend(btn.dataset.send);
+      return;
+    }
+    if (btn.dataset.importCommands !== undefined) {
+      if (window.UUSPACE_LOAD_COMMANDS) return window.UUSPACE_LOAD_COMMANDS(true);
+      appendStatusEvent("指令导入脚本未加载", "请确认 realtime.js 已随 Docker 镜像发布");
+      return;
+    }
+    if (btn.dataset.refreshDefs !== undefined) {
+      return loadTelemetryDefinitions(true);
+    }
+    if (btn.dataset.commandCategory) {
+      state.commandCategory = btn.dataset.commandCategory;
+      return renderView();
+    }
+  });
+
+  function requestCommandSend(commandId) {
+    if (state.pendingCommandId !== commandId) {
+      state.pendingCommandId = commandId;
+      appendStatusEvent("请再次确认发送", commandId);
+      renderView();
+      return;
+    }
+    state.pendingCommandId = "";
+    sendCommand(commandId);
   }
 
-  const commandSearch = $("#commandSearch");
-  if (commandSearch) {
-    commandSearch.addEventListener("input", () => {
-      state.commandFilter = commandSearch.value;
-      renderView();
-      const nextInput = $("#commandSearch");
-      if (nextInput) {
-        nextInput.focus();
-        nextInput.setSelectionRange(nextInput.value.length, nextInput.value.length);
+  async function sendCommand(commandId) {
+    const command = commands.find((item) => item.id === commandId);
+    if (!command) {
+      appendStatusEvent("指令发送失败", `未找到 ${commandId}`);
+      markCommandResult(commandId, false, "未找到");
+      return;
+    }
+    state.selectedCommandId = commandId;
+    renderView();
+    const payload = {
+      id: command.id,
+      target: command.target,
+      port: Number(command.port) || 0,
+      data: String(command.packet || "").replace(/\s+/g, ""),
+    };
+    if (!payload.target || !payload.port || !payload.data) {
+      appendStatusEvent("指令发送失败", `${command.id} 缺少目标地址、端口或报文内容`);
+      markCommandResult(command.id, false, "参数缺失");
+      return;
+    }
+    try {
+      const response = await fetch("/api/command/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await response.json();
+      if (!response.ok || !body.success) {
+        appendStatusEvent("指令发送失败", body.error || response.statusText || "网络错误");
+        markCommandResult(command.id, false, "发送失败");
+        return;
       }
-    });
+      appendStatusEvent("指令发送成功", `${command.id} -> ${command.target}:${command.port}`);
+      markCommandResult(command.id, true, "已发送");
+    } catch (error) {
+      appendStatusEvent("指令发送失败", String(error));
+      markCommandResult(command.id, false, "网络错误");
+    }
   }
 
-  document.querySelectorAll("[data-command-category]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.commandCategory = button.dataset.commandCategory;
-      renderView();
-    });
+  function markCommandResult(commandId, ok, text) {
+    state.commandResults = { ...state.commandResults, [commandId]: { ok, text } };
+    renderView();
+    setTimeout(() => {
+      const current = state.commandResults[commandId];
+      if (!current || current.text !== text) return;
+      const next = { ...state.commandResults };
+      delete next[commandId];
+      state.commandResults = next;
+      if (state.activeView === "command") renderView();
+    }, 1500);
+  }
+
+  // delegated change/input handlers
+  stage.addEventListener("compositionstart", (ev) => {
+    const filter = liveFilters[ev.target && ev.target.id];
+    if (filter) {
+      state.isComposing = true;
+      filter.compositionStart();
+    }
+  });
+  stage.addEventListener("compositionend", (ev) => {
+    const filter = liveFilters[ev.target && ev.target.id];
+    if (filter) {
+      state.isComposing = false;
+      filter.compositionEnd(ev.target);
+    }
   });
 
-  document.querySelectorAll("[data-command-card]").forEach((card) => {
-    card.addEventListener("click", () => {
-      state.selectedCommandId = card.dataset.commandCard;
-      renderView();
-    });
+  stage.addEventListener("change", (ev) => {
+    const tgt = ev.target;
+    if (tgt.matches && tgt.matches("[data-wave-select]")) {
+      const code = tgt.dataset.waveSelect;
+      if (tgt.checked) state.selectedWaveCodes.add(code);
+      else state.selectedWaveCodes.delete(code);
+      return renderView();
+    }
+    if (tgt.matches && tgt.matches("[data-channel]")) {
+      if (tgt.checked) state.channels.add(tgt.dataset.channel);
+      else removeStagedCurveCode(tgt.dataset.channel);
+      return renderView();
+    }
   });
 
-  document.querySelectorAll("[data-send]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      state.selectedCommandId = button.dataset.send;
-      appendStatusEvent(`${button.dataset.send} 已进入发送确认`);
+  stage.addEventListener("input", (ev) => {
+    const tgt = ev.target;
+    if (tgt && tgt.dataset && tgt.dataset.protocolTest !== undefined) {
+      state.protocolTestHex = tgt.value;
       renderView();
-    });
+      restoreInputFocusBySelector("[data-protocol-test]", state.protocolTestHex);
+      return;
+    }
+    if (tgt && tgt.dataset && tgt.dataset.protocolHeader !== undefined) {
+      state.protocolDraftRuleId = state.selectedRuleId;
+      state.protocolDraftHeader = tgt.value;
+      renderView();
+      restoreInputFocusBySelector("[data-protocol-header]", state.protocolDraftHeader);
+      return;
+    }
+    if (tgt && tgt.dataset && tgt.dataset.renameTable !== undefined) {
+      const view = state.tableViews.find((item) => item.id === tgt.dataset.renameTable);
+      if (view) {
+        view.name = tgt.value.trim() || `表格${state.tableViews.indexOf(view) + 1}`;
+        scheduleRenameRender(`table-${view.id}`, `[data-rename-table="${view.id}"]`, tgt.value);
+      }
+      return;
+    }
+    if (tgt && tgt.dataset && tgt.dataset.renameCurve !== undefined) {
+      const view = state.curveViews.find((item) => item.id === tgt.dataset.renameCurve);
+      if (view) {
+        view.name = tgt.value.trim() || `曲线页面 ${state.curveViews.indexOf(view) + 1}`;
+        scheduleRenameRender(`curve-${view.id}`, `[data-rename-curve="${view.id}"]`, tgt.value);
+      }
+      return;
+    }
+    const filter = liveFilters[tgt && tgt.id];
+    if (filter) filter.input(tgt);
   });
 }
 
@@ -1071,7 +1582,7 @@ function eventRows(rows) {
   return rows
     .map(
       (event) => `
-        <article class="event-row">
+        <article class="event-row ${event.type}">
           <time>${event.time.slice(0, 5)}</time>
           <div class="event-icon ${event.type === "danger" ? "danger" : event.type === "warning" ? "warning" : ""}">${eventIcon(event.type)}</div>
           <p>${event.text}</p>
@@ -1129,53 +1640,67 @@ function renderUdpPortStats() {
 
   return stats
     .map(
-      (item) => `
-        <article class="port-pill ${item.total > 0 ? "active" : ""}">
+      (item) => {
+        const stale = isPortStale(item);
+        const rate = estimatePortRate(item.listenPort);
+        return `
+        <article class="port-pill ${item.total > 0 ? "active" : ""} ${stale ? "warn" : ""}">
           <strong>${item.listenPort}</strong>
           <span>Sheet ${item.sheetIndex}</span>
           <em>${item.total} 包</em>
+          <em>${rate.toFixed(1)} 包/秒</em>
         </article>
-      `,
+      `;
+      },
     )
     .join("");
 }
 
 function valueCards() {
-  const liveRows = getAllTelemetryRows().filter((item) => state.channels.has(item.code));
-  if (liveRows.length) {
-    return liveRows
+  const seriesList = getCurveSeries();
+  if (seriesList.length) {
+    return seriesList
       .slice(0, 8)
       .map(
         (item) => `
           <article class="value-card" data-param-card="${item.code}">
             <span>${item.code}</span>
-            <strong style="color:${colorForCode(item.code)}">${item.value}${item.unit ? ` ${item.unit}` : ""}</strong>
+            <strong style="color:${item.color}">${item.latestText}</strong>
             <div class="mini-bar"><span style="width:72%; background:var(--teal)"></span></div>
           </article>
         `,
       )
       .join("");
   }
-
-  const flat = telemetryGroups.flatMap((group) => group.items).filter((item) => state.channels.has(item.code));
-  return flat
-    .slice(0, 8)
-    .map(
-      (item) => `
-        <article class="value-card" data-param-card="${item.code}">
-          <span>${item.code}</span>
-          <strong style="color:${item.color}">${formatValue(item.value)} ${item.unit}</strong>
-          <div class="mini-bar"><span style="width:${Math.min(92, Math.abs(Number(item.value)) + 35)}%; background:${item.color}"></span></div>
-        </article>
-      `,
-    )
-    .join("");
+  return `<div class="empty-hint">还没有选择曲线通道。</div>`;
 }
 
 function drawTrendChart() {
-  const canvas = $("#trendCanvas");
-  if (!canvas) return;
+  if (state.activeView !== "curve") {
+    state.curveAnimationFrame = null;
+    return;
+  }
+  if (state.curveAnimationFrame) {
+    cancelAnimationFrame(state.curveAnimationFrame);
+    state.curveAnimationFrame = null;
+  }
+  resizeTrendCanvas();
+  const viewsById = new Map(getCurveViews().map((view) => [view.id, view]));
+  document.querySelectorAll(".trend-canvas").forEach((canvas) => {
+    const view = viewsById.get(canvas.dataset.curveCanvas);
+    drawCurveCanvas(canvas, view);
+  });
+  state.chartTick += 1;
+  if (state.activeView === "curve") {
+    state.curveAnimationFrame = requestAnimationFrame(drawTrendChart);
+  } else {
+    state.curveAnimationFrame = null;
+  }
+}
+
+function drawCurveCanvas(canvas, view) {
   const ctx = canvas.getContext("2d");
+  if (!ctx) return;
   const w = canvas.width;
   const h = canvas.height;
   const top = 40;
@@ -1209,16 +1734,44 @@ function drawTrendChart() {
 
   ctx.fillStyle = "#76839b";
   ctx.font = "18px Microsoft YaHei, Segoe UI, sans-serif";
-  ctx.fillText("实时遥测曲线", left, 24);
+  ctx.fillText(view ? view.name : "实时遥测曲线", left, 24);
   ctx.font = "12px Consolas, monospace";
   ctx.fillText("T-60s", left, h - 12);
   ctx.fillText("NOW", w - right - 34, h - 12);
 
-  getCurveSeries()
-    .slice(0, 6)
+  const seriesList = view ? getCurveSeriesForCodes(view.codes) : [];
+  if (!seriesList.length) {
+    ctx.fillStyle = "#76839b";
+    ctx.font = "20px Microsoft YaHei, Segoe UI, sans-serif";
+    ctx.fillText("未选择曲线通道", left + 24, top + 90);
+    ctx.font = "13px Microsoft YaHei, Segoe UI, sans-serif";
+    ctx.fillText("请为这个曲线页面添加波道。", left + 24, top + 122);
+    return;
+  }
+
+  const drawableSeries = seriesList.filter((item) => item.points && item.points.length);
+  if (!drawableSeries.length) {
+    ctx.fillStyle = "#76839b";
+    ctx.font = "20px Microsoft YaHei, Segoe UI, sans-serif";
+    ctx.fillText("等待 UDP 数据刷新曲线", left + 24, top + 90);
+    ctx.font = "13px Microsoft YaHei, Segoe UI, sans-serif";
+    ctx.fillText("已选通道会在收到遥测后显示真实数值。", left + 24, top + 122);
+    return;
+  }
+
+  const allPoints = drawableSeries.flatMap((item) => item.points);
+  const globalMin = Math.min(...allPoints);
+  const globalMax = Math.max(...allPoints);
+  ctx.fillStyle = "#76839b";
+  ctx.font = "12px Consolas, monospace";
+  ctx.fillText(`Y轴范围: ${formatValue(globalMin)} — ${formatValue(globalMax)}`, left + 6, top + 16);
+
+  drawableSeries
     .forEach((item, seriesIndex) => {
-      const rawPoints = item.points && item.points.length ? item.points : syntheticPoints(seriesIndex);
-      const points = normalizePoints(rawPoints);
+      const points = normalizePoints(item.points, globalMin, globalMax);
+      if (!points.length) {
+        return;
+      }
       const coords = points.map((value, i) => ({
         x: left + (chartW / (points.length - 1)) * i,
         y: top + chartH - clamp(value, 0.12, 0.88) * chartH,
@@ -1246,9 +1799,19 @@ function drawTrendChart() {
       ctx.beginPath();
       ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
       ctx.fill();
+
+      const label = `${item.code} ${item.latestText}`;
+      ctx.font = "12px Microsoft YaHei, Segoe UI, sans-serif";
+      const labelWidth = ctx.measureText(label).width;
+      const labelX = Math.max(left + 8, Math.min(last.x + 8, w - right - labelWidth - 10));
+      const labelY = Math.max(top + 16, last.y - 18);
+      ctx.fillStyle = "rgba(7, 9, 13, 0.72)";
+      roundRect(ctx, labelX - 6, labelY - 14, labelWidth + 12, 20, 5);
+      ctx.fill();
+      ctx.fillStyle = item.color;
+      ctx.fillText(label, labelX, labelY);
     });
 
-  state.chartTick += 1;
 }
 
 function appendStatusEvent(text, detail) {
@@ -1257,11 +1820,102 @@ function appendStatusEvent(text, detail) {
   renderTicker();
 }
 
+function appendUdpStatusEvent(packet) {
+  if (state.activeView !== "status" && state.activeView !== "connection") {
+    state.suppressedUdpEvents += 1;
+    return;
+  }
+  const now = Date.now();
+  if (now - state.lastUdpEventAt < 1000) {
+    state.suppressedUdpEvents += 1;
+    return;
+  }
+  const extra = state.suppressedUdpEvents ? `，合并 ${state.suppressedUdpEvents} 包` : "";
+  state.lastUdpEventAt = now;
+  state.suppressedUdpEvents = 0;
+  appendStatusEvent(
+    `端口 ${packet.listenPort} / Sheet ${packet.sheetIndex} 收到 UDP ${packet.length} byte${extra}`,
+    `${packet.sourceIp}:${packet.sourcePort} · ${packet.hex}`,
+  );
+}
+
 function filterRows(selector, keyword, visibleDisplay) {
   const k = keyword.trim().toLowerCase();
   document.querySelectorAll(selector).forEach((row) => {
     row.style.display = row.textContent.toLowerCase().includes(k) ? visibleDisplay : "none";
   });
+}
+
+function getDefaultDisplayForRow(row) {
+  if (row.tagName === "TR") return "";
+  const display = window.getComputedStyle(row).display;
+  return display && display !== "none" ? display : "";
+}
+
+function restoreInputFocus(inputId, value) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  input.focus();
+  const position = String(value || input.value).length;
+  if (typeof input.setSelectionRange === "function") {
+    input.setSelectionRange(position, position);
+  }
+}
+
+function restoreInputFocusBySelector(selector, value) {
+  const input = document.querySelector(selector);
+  if (!input) return;
+  input.focus();
+  const position = String(value || input.value).length;
+  if (typeof input.setSelectionRange === "function") {
+    input.setSelectionRange(position, position);
+  }
+}
+
+function scheduleRenameRender(key, selector, value, delay = 500) {
+  clearTimeout(state.renameDebounceTimers[key]);
+  state.renameDebounceTimers[key] = setTimeout(() => {
+    renderNavigation();
+    renderView();
+    restoreInputFocusBySelector(selector, value);
+  }, delay);
+}
+
+function createLiveFilter(inputId, rowSelector, stateKey, renderDelay = 300) {
+  let composing = false;
+  const applyFilter = (value) => {
+    const keyword = String(value || "").trim().toLowerCase();
+    document.querySelectorAll(rowSelector).forEach((row) => {
+      row.style.display = !keyword || row.textContent.toLowerCase().includes(keyword)
+        ? getDefaultDisplayForRow(row)
+        : "none";
+    });
+  };
+  const scheduleRender = (input) => {
+    clearTimeout(state.searchDebounceTimers[inputId]);
+    const value = input.value;
+    state.searchDebounceTimers[inputId] = setTimeout(() => {
+      state[stateKey] = value;
+      renderView();
+      restoreInputFocus(inputId, value);
+    }, renderDelay);
+  };
+  return {
+    compositionStart() {
+      composing = true;
+      clearTimeout(state.searchDebounceTimers[inputId]);
+    },
+    compositionEnd(input) {
+      composing = false;
+      applyFilter(input.value);
+      scheduleRender(input);
+    },
+    input(input) {
+      if (composing || state.isComposing) return;
+      applyFilter(input.value);
+      scheduleRender(input);
+    },
+  };
 }
 
 function eventIcon(type) {
@@ -1294,6 +1948,40 @@ function formatValue(value) {
   return Math.abs(value) < 1 ? Number(value).toFixed(3) : Number(value).toFixed(1);
 }
 
+function formatTelemetryValue(param) {
+  const raw = String(param.value ?? "").trim();
+  if (!raw || raw === "—") return "—";
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return raw;
+  return formatNumericTelemetry(parsed, getParamDecimals(param));
+}
+
+function selectTelemetryParam(code) {
+  if (!code || state.selectedParamCode === code) return;
+  state.selectedParamCode = code;
+  updateTelemetryRowSelectionInPlace();
+}
+
+function updateTelemetryRowSelectionInPlace() {
+  document.querySelectorAll("tr[data-param-row]").forEach((row) => {
+    row.classList.toggle("selected-row", row.dataset.paramRow === state.selectedParamCode);
+  });
+  document.querySelectorAll("[data-param-card]").forEach((card) => {
+    card.classList.toggle("selected-card", card.dataset.paramCard === state.selectedParamCode);
+  });
+}
+
+function formatRawHex(value) {
+  if (value == null || value === "") return "—";
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value.toString(16).toUpperCase();
+  }
+  const text = String(value).trim();
+  if (!text) return "—";
+  const numeric = Number(text);
+  return Number.isFinite(numeric) ? numeric.toString(16).toUpperCase() : text;
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -1321,9 +2009,6 @@ function startClock() {
     $("#utcClock").textContent = new Date().toISOString().slice(11, 19);
     state.frame += 25;
     $("#frameCounter").textContent = state.frame.toString();
-    if (state.activeView === "curve") {
-      drawTrendChart();
-    }
   }, 1000);
 }
 
@@ -1388,12 +2073,12 @@ function openUdpEventSource() {
         waveNo: item.waveNo,
         formula: item.formula,
       }));
-      if (!state.liveTelemetry.some((item) => item.code === state.selectedParamCode) && state.liveTelemetry[0]) {
+      if (!state.selectedParamCode && state.liveTelemetry[0]) {
         state.selectedParamCode = state.liveTelemetry[0].code;
       }
     }
-    state.udpBridge.history = [packet, ...state.udpBridge.history.filter((item) => item.total !== packet.total)].slice(0, 20);
-    appendStatusEvent(`端口 ${packet.listenPort} / Sheet ${packet.sheetIndex} 收到 UDP ${packet.length} byte`, `${packet.sourceIp}:${packet.sourcePort} · ${packet.hex}`);
+    state.udpBridge.history = [packet, ...state.udpBridge.history.filter((item) => item.total !== packet.total)].slice(0, 12);
+    appendUdpStatusEvent(packet);
     refreshUdpViews();
   });
   source.addEventListener("error", () => {
@@ -1431,11 +2116,18 @@ function refreshUdpViews() {
   if (!["connection", "status", "table"].includes(state.activeView)) {
     return;
   }
+  scheduleUdpViewRefresh();
+}
+
+function scheduleUdpViewRefresh() {
+  if (!["connection", "status", "table"].includes(state.activeView)) {
+    return;
+  }
   const now = Date.now();
   const elapsed = now - state.lastViewRefreshAt;
   if (elapsed >= 250) {
     state.lastViewRefreshAt = now;
-    renderView();
+    updateUdpViewInPlace();
     return;
   }
   if (state.refreshTimer) return;
@@ -1443,13 +2135,92 @@ function refreshUdpViews() {
     state.refreshTimer = null;
     state.lastViewRefreshAt = Date.now();
     if (["connection", "status", "table"].includes(state.activeView)) {
-      renderView();
+      updateUdpViewInPlace();
     }
   }, 250 - elapsed);
 }
 
+function updateUdpViewInPlace() {
+  if (state.activeView === "table") {
+    updateSheetStatusLine();
+    updateTableRowsInPlace();
+    updateSheetTabsInPlace();
+    return;
+  }
+  renderView();
+}
+
+function updateSheetStatusLine() {
+  const line = $(".table-status-line");
+  if (!line) return;
+  const activeRows = getActiveTelemetryRows();
+  const sourceRows = activeRows.length ? activeRows : (state.liveTelemetry.length ? state.liveTelemetry : parameters);
+  const sheetStat = getSheetStat(state.activeSheet);
+  const selectedView = state.tableViews.find((view) => view.id === state.activeTableViewId);
+  line.innerHTML = `
+    <span class="tag ${sheetStat.total > 0 ? "ok" : "warn"}">${sheetStat.total > 0 ? "正在刷新" : "等待 UDP"}</span>
+    <span>端口 ${getRuleBySheet(state.activeSheet).port || "--"} · Sheet ${state.activeSheet}</span>
+    <span>定义 ${getSheetDefinition(state.activeSheet).length || sheetStat.definitionCount || sourceRows.length} 项</span>
+    <span>本 Sheet 包数 ${sheetStat.total || 0}</span>
+    <span>最近更新 ${formatTimeText(sheetStat.lastTime)}</span>
+    ${selectedView ? `<span>当前表格：${selectedView.name}</span>` : ""}
+  `;
+}
+
+function updateSheetTabsInPlace() {
+  document.querySelectorAll(".sheet-tab[data-sheet]").forEach((tab) => {
+    const stat = getSheetStat(tab.dataset.sheet);
+    const count = getSheetDefinition(tab.dataset.sheet).length || stat.definitionCount || 0;
+    tab.classList.toggle("live", Number(stat.total || 0) > 0);
+    const meta = tab.querySelector("em");
+    if (meta) meta.textContent = `${count} 项 / ${stat.total || 0} 包`;
+  });
+}
+
+function updateTableRowsInPlace() {
+  const liveValues = state.sheetLiveValues[String(state.activeSheet)] || {};
+  const definitions = getSheetDefinition(state.activeSheet);
+  const defByCode = new Map(definitions.map((item) => [item.code, item]));
+  document.querySelectorAll("tr[data-param-row]").forEach((row) => {
+    const live = liveValues[row.dataset.paramRow];
+    if (!live) return;
+    const display = getTelemetryDisplayValue(live, defByCode.get(row.dataset.paramRow)?.decimals);
+    const valueText = display.value;
+    const hexText = formatRawHex(live.raw ?? live.hex);
+    updateValueCell(row.querySelector("[data-param-value]"), row.dataset.paramRow, valueText);
+    updateCellText(row.querySelector("[data-param-hex]"), hexText);
+  });
+}
+
+function updateValueCell(cell, code, value) {
+  if (!cell) return;
+  const text = String(value ?? "—");
+  const textTarget = cell.querySelector("div") || cell;
+  if (textTarget.textContent.trim() === text) return;
+  textTarget.textContent = text;
+  cell.classList.add("fresh-cell");
+  clearTimeout(cell._freshTimer);
+  cell._freshTimer = setTimeout(() => {
+    cell.classList.remove("fresh-cell");
+  }, 800);
+}
+
+function updateCellText(cell, value) {
+  if (!cell) return;
+  const text = String(value ?? "—");
+  if (cell.textContent.trim() === text) return;
+  const target = cell.querySelector("div") || cell;
+  target.textContent = text;
+  cell.classList.add("fresh-cell");
+  clearTimeout(cell._freshTimer);
+  cell._freshTimer = setTimeout(() => {
+    cell.classList.remove("fresh-cell");
+  }, 800);
+}
+
 function syncPacketValues(packet) {
   if (!packet || packet.sheetIndex == null) return;
+  store.set("sheetStats", updateSheetStats(state.sheetStats, packet));
   if (!packet.parsed || !packet.parsed.values) return;
   const sheetKey = String(packet.sheetIndex);
   const nextValues = {};
@@ -1457,8 +2228,7 @@ function syncPacketValues(packet) {
     nextValues[item.code] = { ...item, updatedAt: packet.time };
     pushCurvePoint(item.code, Number(item.value), Date.parse(packet.time) || Date.now());
   });
-  state.sheetLiveValues = { ...state.sheetLiveValues, [sheetKey]: nextValues };
-  state.sheetStats = updateSheetStats(state.sheetStats, packet);
+  store.set("sheetLiveValues", { ...state.sheetLiveValues, [sheetKey]: nextValues });
 }
 
 function updateSheetStats(sheetStats, packet) {

@@ -61,6 +61,10 @@
       </footer>
     </div>
 
+    <script type="module">
+      import { formatTelemetryNumber } from "./modules/core/format-telemetry-number.js";
+      window.formatTelemetryNumber = formatTelemetryNumber;
+    </script>
     <script src="./app.js"></script>
     <script src="./realtime.js"></script>
   </body>

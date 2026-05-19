@@ -29,6 +29,7 @@ const state = {
   selectedWaveCodes: new Set(),
   waveDrawerOpen: false,
   tableSearch: "",
+  tableSearchHistory: [],
   telemetry: { decimals: {}, columns: {} },
   curveSearch: "",
   curveBuffers: {},
@@ -55,6 +56,7 @@ const state = {
   favorites: new Set(["FW-A-RPM", "ATT-X", "BAT-VOLT", "TEMP-CABIN"]),
   summaryCollapsed: false,
   chartTick: 0,
+  lastWaveSelectCode: "",
 };
 
 const views = [
@@ -264,6 +266,116 @@ const curveChartInstances = new Map();
 let curveChartFlushTimer = null;
 let curveChartFlushInterval = null;
 
+const APP_VERSION = typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.0";
+
+function getUserSettingsApi() {
+  return window.UUSPACE_USER_SETTINGS || null;
+}
+
+function getPersistApi() {
+  return window.UUSPACE_PERSIST || null;
+}
+
+function schedulePersistWorkspace() {
+  const persist = getPersistApi();
+  const api = getUserSettingsApi();
+  if (!persist || !api) return;
+  persist.debounceSave(
+    "workspace.flush",
+    () => {
+      api.saveWorkspaceSettings(api.snapshotWorkspaceFromState(state), persist);
+    },
+    400,
+  );
+}
+
+function hydrateWorkspaceFromStorage() {
+  const persist = getPersistApi();
+  const api = getUserSettingsApi();
+  if (!persist || !api) return;
+  api.applyWorkspaceSettings(state, api.loadWorkspaceSettings(persist));
+  state.tableSearchHistory = normalizeTableSearchHistory(state.tableSearchHistory);
+  if (!state.curveViews.length) state.activeCurveViewId = "";
+  if (!state.tableViews.length) state.activeTableViewId = "";
+}
+
+function getSearchHistoryApi() {
+  return window.UUSPACE_SEARCH_HISTORY || null;
+}
+
+function normalizeTableSearchHistory(list) {
+  const api = getSearchHistoryApi();
+  return api?.normalizeSearchHistory ? api.normalizeSearchHistory(list) : (list || []).slice(0, 8);
+}
+
+function commitTableSearch(term) {
+  const value = String(term ?? state.tableSearch ?? "").trim();
+  if (!value) return;
+  const api = getSearchHistoryApi();
+  if (api?.pushSearchHistory) {
+    state.tableSearchHistory = api.pushSearchHistory(state.tableSearchHistory, value);
+    schedulePersistWorkspace();
+  }
+}
+
+function updateTableSearchHistoryPanel() {
+  const panel = document.getElementById("paramSearchHistoryPanel");
+  const input = document.getElementById("paramSearch");
+  if (!panel || !input) return;
+  const api = getSearchHistoryApi();
+  const items = api?.filterSearchHistory
+    ? api.filterSearchHistory(state.tableSearchHistory, input.value)
+    : state.tableSearchHistory;
+  const isOpen = document.activeElement === input;
+  const hasItems = items.length > 0;
+  panel.classList.toggle("open", isOpen && (hasItems || !!state.tableSearchHistory.length));
+  if (!isOpen) {
+    panel.innerHTML = "";
+    return;
+  }
+  if (!state.tableSearchHistory.length) {
+    panel.innerHTML = `<div class="search-history-empty">暂无搜索历史</div>`;
+    return;
+  }
+  if (!hasItems) {
+    panel.innerHTML = `<div class="search-history-empty">无匹配历史</div>`;
+    return;
+  }
+  panel.innerHTML = items
+    .map(
+      (term) =>
+        `<button type="button" class="search-history-item" role="option" data-search-history="${escapeAttr(term)}">${escapeAttr(term)}</button>`,
+    )
+    .join("");
+}
+
+function applyTableSearchValue(value, { commitHistory = true } = {}) {
+  const text = String(value ?? "");
+  state.tableSearch = text;
+  if (commitHistory) commitTableSearch(text);
+  else schedulePersistWorkspace();
+  const input = document.getElementById("paramSearch");
+  if (input) {
+    const keyword = text.trim().toLowerCase();
+    document.querySelectorAll("tr[data-param-row]").forEach((row) => {
+      row.style.display = !keyword || row.textContent.toLowerCase().includes(keyword)
+        ? getDefaultDisplayForRow(row)
+        : "none";
+    });
+  }
+  renderView();
+  restoreInputFocus("paramSearch", text);
+  requestAnimationFrame(updateTableSearchHistoryPanel);
+}
+
+function flushPersistWorkspace() {
+  const persist = getPersistApi();
+  const api = getUserSettingsApi();
+  if (!persist || !api) return;
+  persist.flushDebounce?.("workspace.flush");
+  api.saveWorkspaceSettings(api.snapshotWorkspaceFromState(state), persist);
+}
+
 function switchView(viewId) {
   if (!views.some((view) => view.id === viewId)) return;
   if (state.activeView === viewId) return;
@@ -302,6 +414,9 @@ function resizeTrendCanvas() {
 }
 
 function init() {
+  hydrateWorkspaceFromStorage();
+  const verEl = document.getElementById("appVersion");
+  if (verEl) verEl.textContent = `v${APP_VERSION}`;
   renderNavigation();
   renderDock();
   renderTicker();
@@ -309,6 +424,7 @@ function init() {
   bindGlobalActions();
   connectUdpBridge();
   startClock();
+  window.addEventListener("beforeunload", flushPersistWorkspace);
   store.subscribe(["sheetStats", "sheetLiveValues"], () => {
     if (state.activeView === "table") scheduleUdpViewRefresh();
   });
@@ -924,6 +1040,7 @@ function normalizeCurveView(view) {
         id: chart.id,
         name: chart.name,
         codes: [...new Set((chart.codes || []).filter(Boolean))],
+        zoom: chart.zoom,
       })),
     };
   }
@@ -1032,6 +1149,7 @@ function createCurveTabPage() {
   const view = { id, name: `Tab页面 ${getCurveViews().length + 1}`, charts: [], layoutColumns: 1 };
   state.curveViews = [...getCurveViews(), view];
   state.activeCurveViewId = id;
+  schedulePersistWorkspace();
   return view;
 }
 
@@ -1049,6 +1167,7 @@ function addCurveChartFromSelection(codes) {
   tab = { ...tab, charts: [...(tab.charts || []), chart] };
   state.curveViews = getCurveViews().map((view) => (view.id === tab.id ? tab : view));
   state.activeCurveViewId = tab.id;
+  schedulePersistWorkspace();
   return { tab, chart };
 }
 
@@ -1135,11 +1254,18 @@ function buildCurveOptionForChart(chart) {
       samples: state.curveBuffers[code] || [],
     };
   });
+  const entry = curveChartInstances.get(chart.id);
+  const zoom = chart.zoom || entry?.axisZoom;
+  const axisZoom =
+    zoom && [zoom.xMin, zoom.xMax, zoom.yMin, zoom.yMax].some(Number.isFinite)
+      ? { xMin: zoom.xMin, xMax: zoom.xMax, yMin: zoom.yMin, yMax: zoom.yMax }
+      : undefined;
   if (api?.buildCurveOption) {
     return api.buildCurveOption({
       viewName: chart.name,
       now,
       series,
+      axisZoom,
       emptyTitle: "等待遥测数据",
       emptySubtitle: "UDP 数据到达后自动绘制。",
     });
@@ -1169,6 +1295,9 @@ function mountCurveCharts() {
           entry.legendSelected = { ...(ev.selected || {}) };
         });
         curveChartInstances.set(chart.id, entry);
+        bindCurveShiftZoom(host, inst, chart.id);
+      } else if (entry.chart) {
+        bindCurveShiftZoom(host, entry.chart, chart.id);
       }
     });
   }
@@ -1176,6 +1305,93 @@ function mountCurveCharts() {
     if (!liveChartIds.has(chartId)) disposeCurveChart(chartId);
   });
   flushCurveChartsNow();
+}
+
+function saveChartAxisZoom(chartId, axisZoom) {
+  if (!chartId || !axisZoom) return;
+  state.curveViews = getCurveViews().map((tab) => ({
+    ...tab,
+    charts: (tab.charts || []).map((chart) => (chart.id === chartId ? { ...chart, zoom: { ...axisZoom } } : chart)),
+  }));
+  const entry = curveChartInstances.get(chartId);
+  if (entry) entry.axisZoom = { ...axisZoom };
+  schedulePersistWorkspace();
+}
+
+function bindCurveShiftZoom(host, chart, chartId) {
+  if (!host || !chart || host.dataset.shiftZoomBound === "1") return;
+  host.dataset.shiftZoomBound = "1";
+  if (getComputedStyle(host).position === "static") host.style.position = "relative";
+
+  let drag = null;
+  let overlay = null;
+
+  const ensureOverlay = () => {
+    if (overlay) return overlay;
+    overlay = document.createElement("div");
+    overlay.className = "curve-shift-zoom-rect";
+    overlay.setAttribute("aria-hidden", "true");
+    host.appendChild(overlay);
+    return overlay;
+  };
+
+  const paintOverlay = () => {
+    if (!drag || !overlay) return;
+    const left = Math.min(drag.x0, drag.x1);
+    const top = Math.min(drag.y0, drag.y1);
+    const width = Math.abs(drag.x1 - drag.x0);
+    const height = Math.abs(drag.y1 - drag.y0);
+    overlay.style.display = width > 2 && height > 2 ? "block" : "none";
+    overlay.style.left = `${left}px`;
+    overlay.style.top = `${top}px`;
+    overlay.style.width = `${width}px`;
+    overlay.style.height = `${height}px`;
+  };
+
+  const onMove = (e) => {
+    if (!drag) return;
+    const rect = host.getBoundingClientRect();
+    drag.x1 = e.clientX - rect.left;
+    drag.y1 = e.clientY - rect.top;
+    paintOverlay();
+  };
+
+  const onUp = () => {
+    if (!drag) return;
+    const { x0, y0, x1, y1 } = drag;
+    drag = null;
+    if (overlay) overlay.style.display = "none";
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    if (Math.abs(x1 - x0) < 8 || Math.abs(y1 - y0) < 8) return;
+
+    const px0 = Math.min(x0, x1);
+    const px1 = Math.max(x0, x1);
+    const py0 = Math.min(y0, y1);
+    const py1 = Math.max(y0, y1);
+    const a = chart.convertFromPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [px0, py1]);
+    const b = chart.convertFromPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [px1, py0]);
+    if (!Array.isArray(a) || !Array.isArray(b)) return;
+    const xMin = Math.min(Number(a[0]), Number(b[0]));
+    const xMax = Math.max(Number(a[0]), Number(b[0]));
+    const yMin = Math.min(Number(a[1]), Number(b[1]));
+    const yMax = Math.max(Number(a[1]), Number(b[1]));
+    if (![xMin, xMax, yMin, yMax].every(Number.isFinite)) return;
+    saveChartAxisZoom(chartId, { xMin, xMax, yMin, yMax });
+    flushCurveChartsNow();
+  };
+
+  host.addEventListener("mousedown", (e) => {
+    if (!e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = host.getBoundingClientRect();
+    drag = { x0: e.clientX - rect.left, y0: e.clientY - rect.top, x1: e.clientX - rect.left, y1: e.clientY - rect.top };
+    ensureOverlay();
+    paintOverlay();
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
 }
 
 function flushCurveChartsNow() {
@@ -1302,7 +1518,10 @@ function renderTelemetryTable() {
           ${selectedView ? `<span>当前表格：${selectedView.name}</span>` : ""}
         </div>
         <div class="data-toolbar">
-          <input class="search-box" id="paramSearch" value="${escapeAttr(state.tableSearch)}" placeholder="搜索参数、代号、分组、路序、公式" />
+          <div class="search-history-wrap">
+            <input class="search-box" id="paramSearch" value="${escapeAttr(state.tableSearch)}" placeholder="搜索参数、代号、分组、路序、公式" autocomplete="off" aria-expanded="false" aria-controls="paramSearchHistoryPanel" />
+            <div class="search-history-panel" id="paramSearchHistoryPanel" role="listbox" aria-label="最近搜索（最多 8 条）"></div>
+          </div>
           <div class="segmented" aria-label="参数筛选">
             ${["全部", "告警", "收藏"].map((filter) => `<button class="segment ${state.dataFilter === filter ? "active" : ""}" data-data-filter="${filter}">${filter}</button>`).join("")}
           </div>
@@ -1323,7 +1542,11 @@ function renderTelemetryTable() {
             </div>
           </aside>
           <section class="table-wrap">
-            <h3 class="table-wrap-title">Sheet ${state.activeSheet} 遥测大表 <small>${rows.length}/${filteredRows.length} 行${filteredRows.length > rows.length ? "，输入搜索可缩小范围" : ""}</small></h3>
+            <h3 class="table-wrap-title">${
+              selectedView
+                ? `${escapeAttr(selectedView.name)} <small>${rows.length} 行${state.tableSearch.trim() ? ` · 搜索「${escapeAttr(state.tableSearch.trim())}」` : ""}</small>`
+                : `Sheet ${state.activeSheet} 遥测大表 <small>${rows.length}/${filteredRows.length} 行${state.tableSearch.trim() ? ` · 搜索「${escapeAttr(state.tableSearch.trim())}」` : ""}</small>`
+            }</h3>
             <div class="table-scroll" aria-label="遥测参数列表">
             <table class="param-table">
               <thead>
@@ -1419,7 +1642,7 @@ function renderCurve() {
       <section class="trend-stack">
         <div class="curve-workbar">
           <div class="curve-page-toolbar">
-            <div class="view-title curve-page-toolbar-title">曲线 Tab<small>${curveViews.length} 个 Tab · ${plottedCodes.length} 个通道</small></div>
+            <div class="view-title curve-page-toolbar-title">曲线 Tab<small>${curveViews.length} 个 Tab · ${plottedCodes.length} 个通道 · Shift+拖框放大</small></div>
             <div class="curve-page-tabs-scroll">
               <div class="segmented curve-page-tabs" aria-label="曲线 Tab 切换">
                 ${curveViews
@@ -1552,8 +1775,12 @@ function bindViewActions() {
     if (ev.target.closest && (ev.target.closest("[data-wave-select]") || ev.target.closest("[data-wave-cell]"))) {
       return; // let checkbox cell change handler manage selection, avoid re-render before change event
     }
-    const btn = ev.target.closest && ev.target.closest("[data-sheet],[data-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-fav],[data-toggle-wave-drawer],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
+    const btn = ev.target.closest && ev.target.closest("[data-sheet],[data-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
     if (!btn) return;
+    if (btn.dataset.searchHistory !== undefined) {
+      applyTableSearchValue(btn.dataset.searchHistory, { commitHistory: true });
+      return;
+    }
     if (btn.dataset.viewShortcut) return switchView(btn.dataset.viewShortcut);
     if (btn.dataset.rule) {
       state.selectedRuleId = btn.dataset.rule;
@@ -1568,12 +1795,14 @@ function bindViewActions() {
       state.activeTableViewId = "";
       const rows = getActiveTelemetryRows();
       if (rows[0]) state.selectedParamCode = rows[0].code;
+      schedulePersistWorkspace();
       return renderView();
     }
     if (btn.dataset.tableView !== undefined) {
       state.activeTableViewId = btn.dataset.tableView;
       const rows = getActiveTelemetryRows();
       if (rows[0]) state.selectedParamCode = rows[0].code;
+      schedulePersistWorkspace();
       return renderView();
     }
     if (btn.dataset.addTable !== undefined) {
@@ -1583,7 +1812,8 @@ function bindViewActions() {
       state.tableViews.push({ id, name: `表格${state.tableViews.length + 1}`, sheet: state.activeSheet, codes: rows.map((r) => r.code) });
       state.activeTableViewId = id;
       state.selectedWaveCodes.clear();
-      appendStatusEvent(`已添加 Sheet ${state.activeSheet} 自定义表格`, `${rows.length} 个遥测参数`);
+      schedulePersistWorkspace();
+      appendStatusEvent(`已添加 Sheet ${state.activeSheet} 自定义表格`, `${rows.length} 个遥测参数 · 已切换到新表`);
       return renderView();
     }
     if (btn.dataset.addCurve !== undefined) {
@@ -1615,6 +1845,7 @@ function bindViewActions() {
       state.activeCurveViewId = "";
       clearCurveSelections();
       state.curveBuffers = {};
+      schedulePersistWorkspace();
       appendStatusEvent("曲线通道已清空");
       return renderView();
     }
@@ -1637,6 +1868,7 @@ function bindViewActions() {
       if (!viewId || !chartId || !code) return;
       state.activeCurveViewId = viewId;
       removeCurveCode(viewId, chartId, code);
+      schedulePersistWorkspace();
       appendStatusEvent("已移除曲线通道", code);
       return renderView();
     }
@@ -1646,6 +1878,7 @@ function bindViewActions() {
       if (!viewId || !chartId) return;
       state.activeCurveViewId = viewId;
       removeCurveChart(viewId, chartId);
+      schedulePersistWorkspace();
       appendStatusEvent("已删除曲线画布");
       return renderView();
     }
@@ -1656,11 +1889,13 @@ function bindViewActions() {
       if (state.activeCurveViewId === removedId) {
         state.activeCurveViewId = state.curveViews[0] ? state.curveViews[0].id : "";
       }
+      schedulePersistWorkspace();
       appendStatusEvent("已删除 Tab 页面");
       return renderView();
     }
     if (btn.dataset.curveView) {
       state.activeCurveViewId = btn.dataset.curveView;
+      schedulePersistWorkspace();
       return renderView();
     }
     if (btn.dataset.renameTable !== undefined) return;
@@ -1789,12 +2024,73 @@ function bindViewActions() {
     }
   });
 
+  stage.addEventListener("mousedown", (ev) => {
+    const historyItem = ev.target.closest && ev.target.closest("[data-search-history]");
+    if (historyItem) {
+      ev.preventDefault();
+      applyTableSearchValue(historyItem.dataset.searchHistory, { commitHistory: true });
+      return;
+    }
+    const cell = ev.target.closest && ev.target.closest("[data-wave-cell]");
+    if (!cell) return;
+    const row = cell.closest("tr[data-param-row]");
+    if (!row) return;
+    const code = row.dataset.paramRow;
+    if (!code) return;
+    if (ev.shiftKey && state.lastWaveSelectCode) {
+      ev.preventDefault();
+      const order = getVisibleWaveCodesInOrder();
+      const from = order.indexOf(state.lastWaveSelectCode);
+      const to = order.indexOf(code);
+      if (from >= 0 && to >= 0) {
+        const [start, end] = from < to ? [from, to] : [to, from];
+        for (let i = start; i <= end; i += 1) state.selectedWaveCodes.add(order[i]);
+        state.lastWaveSelectCode = code;
+        updateWaveSelectionInPlace();
+      }
+      return;
+    }
+    if (!(ev.ctrlKey || ev.metaKey)) {
+      state.lastWaveSelectCode = code;
+    }
+  });
+
+  stage.addEventListener("focusin", (ev) => {
+    if (ev.target?.id === "paramSearch") {
+      ev.target.setAttribute("aria-expanded", "true");
+      updateTableSearchHistoryPanel();
+    }
+  });
+
+  stage.addEventListener("focusout", (ev) => {
+    if (ev.target?.id !== "paramSearch") return;
+    const panel = document.getElementById("paramSearchHistoryPanel");
+    if (panel && ev.relatedTarget && panel.contains(ev.relatedTarget)) return;
+    const value = ev.target.value;
+    setTimeout(() => {
+      if (document.activeElement?.id !== "paramSearch") {
+        commitTableSearch(value);
+        document.getElementById("paramSearch")?.setAttribute("aria-expanded", "false");
+        updateTableSearchHistoryPanel();
+      }
+    }, 120);
+  });
+
+  stage.addEventListener("keydown", (ev) => {
+    if (ev.target?.id === "paramSearch" && ev.key === "Enter") {
+      ev.preventDefault();
+      applyTableSearchValue(ev.target.value, { commitHistory: true });
+    }
+  });
+
   stage.addEventListener("change", (ev) => {
     const tgt = ev.target;
     if (tgt.matches && tgt.matches("[data-wave-select]")) {
+      if (ev.shiftKey) return;
       const code = tgt.dataset.waveSelect;
       if (tgt.checked) state.selectedWaveCodes.add(code);
       else state.selectedWaveCodes.delete(code);
+      state.lastWaveSelectCode = code;
       return updateWaveSelectionInPlace();
     }
     if (tgt.matches && tgt.matches("[data-curve-layout-select]")) {
@@ -1802,6 +2098,7 @@ function bindViewActions() {
       if (!tab) return;
       tab.layoutColumns = Math.min(10, Math.max(1, Number(tgt.value) || 1));
       state.curveViews = getCurveViews().map((view) => (view.id === tab.id ? tab : view));
+      schedulePersistWorkspace();
       return renderView();
     }
     if (tgt.matches && tgt.matches("[data-channel]")) {
@@ -1831,6 +2128,7 @@ function bindViewActions() {
       if (view) {
         view.name = tgt.value.trim() || `表格${state.tableViews.indexOf(view) + 1}`;
         scheduleRenameRender(`table-${view.id}`, `[data-rename-table="${view.id}"]`, tgt.value);
+        state.renameDebounceTimers[`table-persist-${view.id}`] = setTimeout(() => schedulePersistWorkspace(), 400);
       }
       return;
     }
@@ -1841,6 +2139,7 @@ function bindViewActions() {
         clearTimeout(state.renameDebounceTimers[`curve-${view.id}`]);
         state.renameDebounceTimers[`curve-${view.id}`] = setTimeout(() => {
           updateCurveViewTabsInPlace();
+          schedulePersistWorkspace();
         }, 300);
         updateCurveViewTabsInPlace();
       }
@@ -2177,6 +2476,7 @@ function createLiveFilter(inputId, rowSelector, stateKey, renderDelay = 300) {
     const value = input.value;
     state.searchDebounceTimers[inputId] = setTimeout(() => {
       state[stateKey] = value;
+      if (stateKey === "tableSearch") schedulePersistWorkspace();
       renderView();
       restoreInputFocus(inputId, value);
     }, renderDelay);
@@ -2194,6 +2494,7 @@ function createLiveFilter(inputId, rowSelector, stateKey, renderDelay = 300) {
     input(input) {
       if (composing || state.isComposing) return;
       applyFilter(input.value);
+      if (inputId === "paramSearch") updateTableSearchHistoryPanel();
       scheduleRender(input);
     },
   };
@@ -2250,6 +2551,13 @@ function updateTelemetryRowSelectionInPlace() {
   document.querySelectorAll("[data-param-card]").forEach((card) => {
     card.classList.toggle("selected-card", card.dataset.paramCard === state.selectedParamCode);
   });
+}
+
+function getVisibleWaveCodesInOrder() {
+  return [...document.querySelectorAll("tr[data-param-row]")]
+    .filter((row) => row.style.display !== "none")
+    .map((row) => row.dataset.paramRow)
+    .filter(Boolean);
 }
 
 function updateWaveSelectionInPlace() {

@@ -94,7 +94,7 @@ export function formatCurveAxisTooltip(params) {
 }
 
 /**
- * @param {{ viewName?: string, emptyTitle?: string, emptySubtitle?: string, series: Array<{ code: string, name?: string, paramName?: string, color: string, samples: CurveSample[] }>, now?: number, windowMs?: number, backgroundColor?: string }} params
+ * @param {{ viewName?: string, emptyTitle?: string, emptySubtitle?: string, series: Array<{ code: string, name?: string, paramName?: string, color: string, samples: CurveSample[] }>, now?: number, windowMs?: number, backgroundColor?: string, axisZoom?: { xMin?: number, xMax?: number, yMin?: number, yMax?: number } }} params
  */
 export function buildCurveOption(params) {
   const now = Number(params.now) || Date.now();
@@ -106,6 +106,11 @@ export function buildCurveOption(params) {
   const yMax = values.length ? Math.max(...values) : 1;
   const yPad = Math.max((yMax - yMin) * 0.08, Math.abs(yMax) * 0.02, 0.5);
   const timeAxis = computeCurveTimeAxis(series, now, windowMs);
+  const axisZoom = params.axisZoom;
+  const xMin = Number.isFinite(axisZoom?.xMin) ? axisZoom.xMin : timeAxis.min;
+  const xMax = Number.isFinite(axisZoom?.xMax) ? axisZoom.xMax : timeAxis.max;
+  const yAxisMin = Number.isFinite(axisZoom?.yMin) ? axisZoom.yMin : yMin - yPad;
+  const yAxisMax = Number.isFinite(axisZoom?.yMax) ? axisZoom.yMax : yMax + yPad;
 
   return {
     backgroundColor,
@@ -147,8 +152,8 @@ export function buildCurveOption(params) {
       : undefined,
     xAxis: {
       type: "time",
-      min: timeAxis.min,
-      max: timeAxis.max,
+      min: xMin,
+      max: xMax,
       axisLine: { lineStyle: { color: "rgba(37,46,66,.72)" } },
       axisTick: { show: false },
       splitLine: { show: true, lineStyle: { color: "rgba(37,46,66,.72)" } },
@@ -156,8 +161,8 @@ export function buildCurveOption(params) {
     },
     yAxis: {
       type: "value",
-      min: yMin - yPad,
-      max: yMax + yPad,
+      min: yAxisMin,
+      max: yAxisMax,
       scale: true,
       axisLine: { show: false },
       axisTick: { show: false },

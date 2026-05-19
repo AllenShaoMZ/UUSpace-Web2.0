@@ -182,6 +182,25 @@ button {
   font-weight: 600;
 }
 
+.app-version {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.curve-shift-zoom-rect {
+  position: absolute;
+  display: none;
+  border: 1px dashed rgba(91, 124, 250, 0.92);
+  background: rgba(91, 124, 250, 0.12);
+  pointer-events: none;
+  z-index: 5;
+  border-radius: 4px;
+}
+
 .dot {
   display: inline-block;
   width: 7px;
@@ -1510,6 +1529,63 @@ button {
 .command-toolbar .search-box,
 .event-toolbar .search-box {
   max-width: 320px;
+}
+
+.search-history-wrap {
+  position: relative;
+  flex: 0 1 320px;
+  min-width: 200px;
+  max-width: 320px;
+}
+
+.search-history-wrap .search-box {
+  width: 100%;
+  max-width: none;
+}
+
+.search-history-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(14, 18, 26, 0.98);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+}
+
+.search-history-panel.open {
+  display: block;
+}
+
+.search-history-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.search-history-item:hover,
+.search-history-item:focus-visible {
+  background: rgba(91, 124, 250, 0.14);
+  outline: none;
+}
+
+.search-history-empty {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .column-config-anchor {

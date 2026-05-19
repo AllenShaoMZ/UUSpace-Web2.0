@@ -56,9 +56,13 @@ const state = {
   protocolDraftHeader: "",
   favorites: new Set(["FW-A-RPM", "ATT-X", "BAT-VOLT", "TEMP-CABIN"]),
   summaryCollapsed: false,
+  dockCollapsed: false,
+  curveChannelPanelCollapsed: false,
   chartTick: 0,
   lastWaveSelectCode: "",
 };
+
+let lastAlarmPanelUpdateAt = 0;
 
 const views = [
   { id: "status", label: "状态总览" },
@@ -461,6 +465,7 @@ function resizeTrendCanvas() {
 function init() {
   hydrateWorkspaceFromStorage();
   ensureBuiltinTableViews();
+  document.querySelector(".workspace")?.classList.toggle("workspace--dock-collapsed", !!state.dockCollapsed);
   const verEl = document.getElementById("appVersion");
   if (verEl) verEl.textContent = `v${APP_VERSION}`;
   renderNavigation();
@@ -624,6 +629,7 @@ function renderView() {
 
   $("#stage").innerHTML = renderer();
   bindViewActions();
+  requestAnimationFrame(() => bindTabScrollers(stage));
 
   if (state.activeView === "curve") {
     requestAnimationFrame(() => {
@@ -1168,6 +1174,52 @@ function getActiveCurveView() {
   return views.find((view) => view.id === state.activeCurveViewId) || views[0] || null;
 }
 
+function switchCurveView(viewId) {
+  if (!viewId || state.activeCurveViewId === viewId) return;
+  const prevId = state.activeCurveViewId;
+  state.activeCurveViewId = viewId;
+  schedulePersistWorkspace();
+  if (prevId) disposeCurveChartsForView(prevId);
+  document.querySelectorAll("[data-curve-view]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.curveView === viewId);
+  });
+  const stageEl = document.querySelector(".curve-page-stage");
+  const view = getActiveCurveView();
+  if (stageEl) {
+    stageEl.innerHTML = view
+      ? renderActiveCurvePage(view)
+      : `<article class="view-surface chart-wrap empty-curve-panel"><div class="empty-hint">还没有 Tab 页面。点「新建Tab页面」建空白页，或勾选波道后点「新建曲线页」。</div></article>`;
+    requestAnimationFrame(() => {
+      mountCurveCharts();
+      bindTabScrollers(document.querySelector(".curve-page-tabs-scroll") || document);
+    });
+  }
+  const layoutSelect = document.querySelector("[data-curve-layout-select]");
+  const active = getActiveCurveView();
+  if (layoutSelect) {
+    layoutSelect.disabled = !active;
+    layoutSelect.value = String(active ? getCurveViewLayoutColumns(active) : 1);
+  }
+}
+
+function applyCurveLayoutColumns(columns) {
+  const tab = getActiveCurveView();
+  if (!tab) return;
+  const nextColumns = Math.min(10, Math.max(1, Number(columns) || 1));
+  tab.layoutColumns = nextColumns;
+  state.curveViews = getCurveViews().map((view) => (view.id === tab.id ? { ...tab, layoutColumns: nextColumns } : view));
+  const grid = document.querySelector(".curve-page-grid");
+  if (grid) {
+    grid.className = `curve-page-grid columns-${nextColumns}`;
+    requestAnimationFrame(() => {
+      curveChartInstances.forEach((entry) => entry.chart?.resize());
+    });
+  } else {
+    renderView();
+  }
+  schedulePersistWorkspace();
+}
+
 function getCurveViewLayoutColumns(view) {
   return Math.min(10, Math.max(1, Number(view?.layoutColumns) || 1));
 }
@@ -1607,24 +1659,27 @@ function flushCurveChartsNow() {
         { notMerge: false, lazyUpdate: true },
       );
     }
-    entry.chart.resize();
+    if (entry._lastResizeW !== entry.host?.clientWidth || entry._lastResizeH !== entry.host?.clientHeight) {
+      entry._lastResizeW = entry.host?.clientWidth;
+      entry._lastResizeH = entry.host?.clientHeight;
+      entry.chart.resize();
+    }
   });
 }
 
 function scheduleCurveChartFlush() {
   if (state.activeView !== "curve") return;
-  const delay = getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 150;
+  const delay = getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 250;
   if (curveChartFlushTimer) return;
   curveChartFlushTimer = setTimeout(() => {
     curveChartFlushTimer = null;
-    mountCurveCharts();
     flushCurveChartsNow();
   }, delay);
 }
 
 function startCurveChartLoop() {
   stopCurveChartLoop();
-  const delay = getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 150;
+  const delay = Math.max(250, getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 250);
   curveChartFlushInterval = setInterval(() => {
     if (state.activeView !== "curve") {
       stopCurveChartLoop();
@@ -1713,21 +1768,21 @@ function renderTelemetryTable() {
           <div class="segmented" aria-label="参数筛选">
             ${["全部", "告警", "收藏"].map((filter) => `<button class="segment ${state.dataFilter === filter ? "active" : ""}" data-data-filter="${filter}">${filter}</button>`).join("")}
           </div>
-          <div class="segmented table-view-tabs" aria-label="表格切换">
-            ${state.tableViews
-              .filter((view) => view.builtin)
-              .map(
+          ${renderTabScrollerHtml(
+            [
+              ...state.tableViews
+                .filter((view) => view.builtin)
+                .map(
+                  (view) =>
+                    `<button type="button" class="segment ${state.activeTableViewId === view.id ? "active" : ""}" data-table-view="${view.id}">${view.name}</button>`,
+                ),
+              ...customTableViews.map(
                 (view) =>
-                  `<button class="segment ${state.activeTableViewId === view.id ? "active" : ""}" data-table-view="${view.id}">${view.name}</button>`,
-              )
-              .join("")}
-            ${customTableViews
-              .map(
-                (view) =>
-                  `<button class="segment ${state.activeTableViewId === view.id ? "active" : ""}" data-table-view="${view.id}">${view.name}</button>`,
-              )
-              .join("")}
-          </div>
+                  `<button type="button" class="segment ${state.activeTableViewId === view.id ? "active" : ""}" data-table-view="${view.id}">${view.name}</button>`,
+              ),
+            ].join(""),
+            { extraClass: "table-tab-scroller", segmentClass: "table-view-tabs", ariaLabel: "表格切换" },
+          )}
           ${selectedView && !selectedView.builtin ? `<input class="inline-name-input" data-rename-table="${selectedView.id}" value="${escapeAttr(selectedView.name)}" aria-label="修改表格名称" />` : ""}
           ${selectedView && !selectedView.builtin ? `<button type="button" class="ghost-button" data-remove-table-view="${selectedView.id}">删除表格</button>` : ""}
           <button class="ghost-button" data-toggle-wave-drawer>${state.waveDrawerOpen ? "收起波道" : "已选波道"} ${selectedCodesCount}</button>
@@ -1747,7 +1802,7 @@ function renderTelemetryTable() {
                 ? `${escapeAttr(selectedView.name)} <small>${rows.length} 行${state.tableSearch.trim() ? ` · 搜索「${escapeAttr(state.tableSearch.trim())}」` : ""}</small>`
                 : `表${state.activeSheet} <small>${rows.length}/${filteredRows.length} 行</small>`
             }</h3>
-            <div class="table-scroll" aria-label="遥测参数列表">
+            <div class="table-scroll auto-hide-scrollbar" aria-label="遥测参数列表">
             <table class="param-table">
               <thead>
                 <tr><th style="width:54px">选择</th><th>参数代号</th><th>参数名称</th><th>当前值</th><th>十六进制</th><th>单位</th></tr>
@@ -1790,11 +1845,12 @@ function renderCurve() {
   const layoutOptions = Array.from({ length: 10 }, (_, index) => index + 1);
   const activeLayout = activeCurveView ? getCurveViewLayoutColumns(activeCurveView) : 1;
   return `
-    <div class="view split-grid curve-view">
+    <div class="view split-grid curve-view ${state.curveChannelPanelCollapsed ? "curve-channel-collapsed" : ""}">
       <section class="view-surface channel-picker">
         <div class="view-header compact-head">
           <div class="view-title">曲线通道<small>${activeCurveView ? `当前 Tab：${activeCurveView.name || "未命名"}` : "勾选波道后点「新建曲线页」绘制"}</small></div>
           <div class="header-actions">
+            <button type="button" class="ghost-button" data-toggle-curve-channel-panel>${state.curveChannelPanelCollapsed ? "显示通道栏" : "隐藏通道栏"}</button>
             <button class="primary-button" data-add-curve title="根据所选波道在当前 Tab 绘制曲线">新建曲线页</button>
           </div>
         </div>
@@ -1844,14 +1900,15 @@ function renderCurve() {
           <div class="curve-page-toolbar">
             <div class="view-title curve-page-toolbar-title">曲线 Tab<small>${curveViews.length} 个 Tab · ${plottedCodes.length} 个通道 · Ctrl+拖框放大（弹窗实时）</small></div>
             <div class="curve-page-tabs-scroll">
-              <div class="segmented curve-page-tabs" aria-label="曲线 Tab 切换">
-                ${curveViews
+              ${renderTabScrollerHtml(
+                curveViews
                   .map(
                     (view) =>
                       `<button type="button" class="segment ${view.id === state.activeCurveViewId ? "active" : ""}" data-curve-view="${escapeAttr(view.id)}">${escapeAttr(view.name)}</button>`,
                   )
-                  .join("")}
-              </div>
+                  .join(""),
+                { segmentClass: "curve-page-tabs", ariaLabel: "曲线 Tab 切换" },
+              )}
             </div>
             ${
               activeCurveView
@@ -1859,7 +1916,7 @@ function renderCurve() {
                 : ""
             }
           </div>
-          <div class="header-actions">
+          <div class="header-actions curve-workbar-actions">
             <button class="ghost-button" data-create-curve-view title="新建空白 Tab 页面，不添加波道">新建Tab页面</button>
             <button class="ghost-button" data-clear-curves>清空曲线</button>
             ${
@@ -1959,6 +2016,67 @@ function renderCommandCenter() {
   `;
 }
 
+function renderTabScrollerHtml(segmentsHtml, options = {}) {
+  const extraClass = options.extraClass ? ` ${options.extraClass}` : "";
+  const segmentClass = options.segmentClass ? ` ${options.segmentClass}` : "";
+  const aria = options.ariaLabel ? ` aria-label="${escapeAttr(options.ariaLabel)}"` : "";
+  return `
+    <div class="tab-scroller${extraClass}" data-tab-scroller>
+      <button type="button" class="tab-scroller-arrow" data-tab-scroll="prev" aria-label="向前">‹</button>
+      <div class="tab-scroller-viewport">
+        <div class="segmented${segmentClass}"${aria}>${segmentsHtml}</div>
+      </div>
+      <button type="button" class="tab-scroller-arrow" data-tab-scroll="next" aria-label="向后">›</button>
+    </div>
+  `;
+}
+
+function bindTabScrollers(root) {
+  const scope = root && root.querySelectorAll ? root : document.getElementById("stage") || document;
+  scope.querySelectorAll("[data-tab-scroller]").forEach((scroller) => {
+    if (scroller.dataset.tabScrollerBound === "1") return;
+    scroller.dataset.tabScrollerBound = "1";
+    const viewport = scroller.querySelector(".tab-scroller-viewport");
+    if (!viewport) return;
+    const prevBtn = scroller.querySelector('[data-tab-scroll="prev"]');
+    const nextBtn = scroller.querySelector('[data-tab-scroll="next"]');
+    const step = () => Math.max(140, Math.floor(viewport.clientWidth * 0.65));
+
+    const update = () => {
+      const maxScroll = viewport.scrollWidth - viewport.clientWidth;
+      const overflow = maxScroll > 4;
+      scroller.classList.toggle("tab-scroller-overflow", overflow);
+      if (prevBtn) prevBtn.disabled = !overflow || viewport.scrollLeft <= 1;
+      if (nextBtn) nextBtn.disabled = !overflow || viewport.scrollLeft >= maxScroll - 1;
+    };
+
+    prevBtn?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      viewport.scrollBy({ left: -step(), behavior: "smooth" });
+    });
+    nextBtn?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      viewport.scrollBy({ left: step(), behavior: "smooth" });
+    });
+    viewport.addEventListener("scroll", update, { passive: true });
+    viewport.addEventListener(
+      "wheel",
+      (ev) => {
+        if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
+        ev.preventDefault();
+        viewport.scrollLeft += ev.deltaY;
+      },
+      { passive: false },
+    );
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => update());
+      ro.observe(viewport);
+      scroller._tabScrollerRo = ro;
+    }
+    requestAnimationFrame(update);
+  });
+}
+
 function bindViewActions() {
   const stage = $("#stage");
   if (!stage) return;
@@ -1975,7 +2093,7 @@ function bindViewActions() {
     if (ev.target.closest && (ev.target.closest("[data-wave-select]") || ev.target.closest("[data-wave-cell]"))) {
       return; // let checkbox cell change handler manage selection, avoid re-render before change event
     }
-    const btn = ev.target.closest && ev.target.closest("[data-table-view],[data-remove-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
+    const btn = ev.target.closest && ev.target.closest("[data-table-view],[data-remove-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-curve-channel-panel],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
     if (!btn) return;
     if (btn.dataset.searchHistory !== undefined) {
       applyTableSearchValue(btn.dataset.searchHistory, { commitHistory: true });
@@ -2108,9 +2226,14 @@ function bindViewActions() {
       return renderView();
     }
     if (btn.dataset.curveView) {
-      state.activeCurveViewId = btn.dataset.curveView;
-      schedulePersistWorkspace();
-      return renderView();
+      switchCurveView(btn.dataset.curveView);
+      return;
+    }
+    if (btn.dataset.toggleCurveChannelPanel !== undefined) {
+      state.curveChannelPanelCollapsed = !state.curveChannelPanelCollapsed;
+      const root = document.querySelector(".view.curve-view");
+      if (root) root.classList.toggle("curve-channel-collapsed", state.curveChannelPanelCollapsed);
+      return;
     }
     if (btn.dataset.renameTable !== undefined) return;
     if (btn.dataset.renameCurve !== undefined) return;
@@ -2308,12 +2431,8 @@ function bindViewActions() {
       return updateWaveSelectionInPlace();
     }
     if (tgt.matches && tgt.matches("[data-curve-layout-select]")) {
-      const tab = getActiveCurveView();
-      if (!tab) return;
-      tab.layoutColumns = Math.min(10, Math.max(1, Number(tgt.value) || 1));
-      state.curveViews = getCurveViews().map((view) => (view.id === tab.id ? tab : view));
-      schedulePersistWorkspace();
-      return renderView();
+      applyCurveLayoutColumns(Number(tgt.value));
+      return;
     }
     if (tgt.matches && tgt.matches("[data-channel]")) {
       if (tgt.checked) state.channels.add(tgt.dataset.channel);
@@ -2366,8 +2485,10 @@ function bindViewActions() {
 
 function bindGlobalActions() {
   $("#collapseSummary").addEventListener("click", () => {
-    state.summaryCollapsed = !state.summaryCollapsed;
-    $("#summaryList").closest(".dock-panel").classList.toggle("collapsed", state.summaryCollapsed);
+    state.dockCollapsed = !state.dockCollapsed;
+    document.querySelector(".workspace")?.classList.toggle("workspace--dock-collapsed", state.dockCollapsed);
+    const btn = $("#collapseSummary");
+    if (btn) btn.title = state.dockCollapsed ? "展开侧栏" : "隐藏侧栏";
   });
   $("#ackAllBtn").addEventListener("click", () => appendStatusEvent("告警面板已确认"));
 }
@@ -3005,7 +3126,11 @@ function scheduleUdpViewRefresh() {
 }
 
 function updateUdpViewInPlace() {
-  updateAlarmPanelInPlace();
+  const now = Date.now();
+  if (now - lastAlarmPanelUpdateAt >= 1000) {
+    lastAlarmPanelUpdateAt = now;
+    updateAlarmPanelInPlace();
+  }
   if (state.activeView === "table") {
     updateSheetStatusLine();
     updateTableRowsInPlace();

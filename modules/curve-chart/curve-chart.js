@@ -177,8 +177,9 @@ export function buildCurveOption(params) {
       name: formatCurveSeriesLabel(item.code, item.name || item.paramName),
       type: "line",
       showSymbol: false,
-      smooth: 0.22,
-      lineStyle: { color: item.color, width: 2 },
+      smooth: false,
+      step: "end",
+      lineStyle: { color: item.color, width: 1 },
       itemStyle: { color: item.color },
       areaStyle: {
         origin: "auto",

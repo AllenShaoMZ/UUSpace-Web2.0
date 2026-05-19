@@ -1,4 +1,7 @@
 :root {
+  --scrollbar-thumb: transparent;
+  --scrollbar-thumb-hover: rgba(154, 168, 191, 0.42);
+  --scrollbar-thumb-active: rgba(154, 168, 191, 0.58);
   --bg: #0a0c11;
   --bar: #11151c;
   --panel: #131722;
@@ -24,6 +27,43 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* UI-04：滚动条默认隐藏，悬停可滚动容器时显示 */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.auto-hide-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.auto-hide-scrollbar:hover {
+  scrollbar-color: var(--scrollbar-thumb-hover) transparent;
+}
+
+.auto-hide-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.auto-hide-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.auto-hide-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+.auto-hide-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.auto-hide-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-active);
 }
 
 html,
@@ -342,19 +382,31 @@ button {
   display: grid;
   grid-template-columns: 286px minmax(0, 1fr);
   min-height: 0;
+  transition: grid-template-columns 0.2s ease;
+}
+
+.workspace.workspace--dock-collapsed {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.workspace.workspace--dock-collapsed .dock-left {
+  padding: 0;
+  border: none;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .dock-left {
   min-height: 0;
+  min-width: 0;
   padding: 12px;
   background: rgba(10, 12, 17, 0.72);
-}
-
-.dock-left {
   display: grid;
   grid-template-rows: minmax(180px, 0.9fr) minmax(220px, 1.1fr);
   gap: 12px;
   border-right: 1px solid var(--line);
+  overflow: hidden;
 }
 
 .stage {
@@ -858,6 +910,21 @@ button {
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 14px;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.view.split-grid.curve-view {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.view.split-grid.curve-view.curve-channel-collapsed {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.view.split-grid.curve-view.curve-channel-collapsed .channel-picker {
+  display: none;
 }
 
 /* 指令控制：左侧卡片列表 + 右侧宽详情（约 46% / 54%） */
@@ -1226,47 +1293,114 @@ button {
 }
 
 .curve-workbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
   min-height: 48px;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(10, 12, 17, 0.32);
-  flex-wrap: wrap;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .curve-page-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  flex: 1 1 auto;
+  gap: 8px;
   min-width: 0;
 }
 
 .curve-page-toolbar-title {
-  flex: 0 0 auto;
+  max-width: 160px;
+  overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.curve-page-toolbar-title small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.curve-workbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .curve-page-tabs-scroll {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding-bottom: 2px;
-  scrollbar-width: thin;
+  max-width: 100%;
+  overflow: hidden;
 }
 
-.curve-page-tabs-scroll .curve-page-tabs {
+.curve-page-tabs-scroll .tab-scroller {
+  max-width: 100%;
+}
+
+.curve-page-tabs-scroll .curve-page-tabs,
+.tab-scroller-viewport .segmented {
   flex: 0 0 auto;
   flex-wrap: nowrap;
   margin-bottom: 0;
+  width: max-content;
+}
+
+.tab-scroller {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tab-scroller.table-tab-scroller {
+  flex: 1 1 240px;
+  min-width: 160px;
+  max-width: 100%;
+}
+
+.tab-scroller-viewport {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: hidden;
+}
+
+.tab-scroller-arrow {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(10, 12, 17, 0.55);
+  color: var(--muted2);
+  line-height: 1;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.tab-scroller-arrow:hover:not(:disabled) {
+  border-color: rgba(91, 124, 250, 0.65);
+  color: var(--text);
+  background: rgba(91, 124, 250, 0.12);
+}
+
+.tab-scroller-arrow:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.tab-scroller:not(.tab-scroller-overflow) .tab-scroller-arrow {
+  opacity: 0.28;
+  pointer-events: none;
 }
 
 .curve-page-rename {
@@ -1737,6 +1871,129 @@ button {
   overflow-y: auto;
 }
 
+.auto-hide-scrollbar,
+.dock-sheet-grid,
+.summary-list,
+.alarm-list,
+.table-scroll,
+.command-list,
+.event-panel-body,
+.search-history-panel,
+.favorite-list,
+.ticker,
+.port-map,
+.udp-history,
+.source-block,
+.table-status-line,
+.connection-grid,
+.config-grid,
+.curve-zoom-chart-host {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.auto-hide-scrollbar:hover,
+.dock-sheet-grid:hover,
+.summary-list:hover,
+.alarm-list:hover,
+.table-scroll:hover,
+.command-list:hover,
+.event-panel-body:hover,
+.search-history-panel:hover,
+.favorite-list:hover,
+.ticker:hover,
+.port-map:hover,
+.udp-history:hover,
+.source-block:hover,
+.table-status-line:hover,
+.connection-grid:hover,
+.config-grid:hover,
+.curve-zoom-chart-host:hover {
+  scrollbar-color: var(--scrollbar-thumb-hover) transparent;
+}
+
+.auto-hide-scrollbar::-webkit-scrollbar,
+.dock-sheet-grid::-webkit-scrollbar,
+.summary-list::-webkit-scrollbar,
+.alarm-list::-webkit-scrollbar,
+.table-scroll::-webkit-scrollbar,
+.command-list::-webkit-scrollbar,
+.event-panel-body::-webkit-scrollbar,
+.search-history-panel::-webkit-scrollbar,
+.favorite-list::-webkit-scrollbar,
+.ticker::-webkit-scrollbar,
+.port-map::-webkit-scrollbar,
+.udp-history::-webkit-scrollbar,
+.source-block::-webkit-scrollbar,
+.table-status-line::-webkit-scrollbar,
+.connection-grid::-webkit-scrollbar,
+.config-grid::-webkit-scrollbar,
+.curve-zoom-chart-host::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.auto-hide-scrollbar::-webkit-scrollbar-track,
+.dock-sheet-grid::-webkit-scrollbar-track,
+.summary-list::-webkit-scrollbar-track,
+.alarm-list::-webkit-scrollbar-track,
+.table-scroll::-webkit-scrollbar-track,
+.command-list::-webkit-scrollbar-track,
+.event-panel-body::-webkit-scrollbar-track,
+.search-history-panel::-webkit-scrollbar-track,
+.favorite-list::-webkit-scrollbar-track,
+.ticker::-webkit-scrollbar-track,
+.port-map::-webkit-scrollbar-track,
+.udp-history::-webkit-scrollbar-track,
+.source-block::-webkit-scrollbar-track,
+.table-status-line::-webkit-scrollbar-track,
+.connection-grid::-webkit-scrollbar-track,
+.config-grid::-webkit-scrollbar-track,
+.curve-zoom-chart-host::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.auto-hide-scrollbar::-webkit-scrollbar-thumb,
+.dock-sheet-grid::-webkit-scrollbar-thumb,
+.summary-list::-webkit-scrollbar-thumb,
+.alarm-list::-webkit-scrollbar-thumb,
+.table-scroll::-webkit-scrollbar-thumb,
+.command-list::-webkit-scrollbar-thumb,
+.event-panel-body::-webkit-scrollbar-thumb,
+.search-history-panel::-webkit-scrollbar-thumb,
+.favorite-list::-webkit-scrollbar-thumb,
+.ticker::-webkit-scrollbar-thumb,
+.port-map::-webkit-scrollbar-thumb,
+.udp-history::-webkit-scrollbar-thumb,
+.source-block::-webkit-scrollbar-thumb,
+.table-status-line::-webkit-scrollbar-thumb,
+.connection-grid::-webkit-scrollbar-thumb,
+.config-grid::-webkit-scrollbar-thumb,
+.curve-zoom-chart-host::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+.auto-hide-scrollbar:hover::-webkit-scrollbar-thumb,
+.dock-sheet-grid:hover::-webkit-scrollbar-thumb,
+.summary-list:hover::-webkit-scrollbar-thumb,
+.alarm-list:hover::-webkit-scrollbar-thumb,
+.table-scroll:hover::-webkit-scrollbar-thumb,
+.command-list:hover::-webkit-scrollbar-thumb,
+.event-panel-body:hover::-webkit-scrollbar-thumb,
+.search-history-panel:hover::-webkit-scrollbar-thumb,
+.favorite-list:hover::-webkit-scrollbar-thumb,
+.ticker:hover::-webkit-scrollbar-thumb,
+.port-map:hover::-webkit-scrollbar-thumb,
+.udp-history:hover::-webkit-scrollbar-thumb,
+.source-block:hover::-webkit-scrollbar-thumb,
+.table-status-line:hover::-webkit-scrollbar-thumb,
+.connection-grid:hover::-webkit-scrollbar-thumb,
+.config-grid:hover::-webkit-scrollbar-thumb,
+.curve-zoom-chart-host:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-hover);
+}
+
 .dock-sheet-tab {
   display: grid;
   gap: 2px;
@@ -1854,8 +2111,7 @@ button {
 }
 
 .table-view-tabs {
-  max-width: 100%;
-  overflow-x: auto;
+  max-width: none;
 }
 
 .data-grid {

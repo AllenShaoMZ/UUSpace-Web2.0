@@ -28,6 +28,7 @@ function getDefaultStorage() {
  */
 export function createPersistenceService(storage = getDefaultStorage()) {
   const debounceTimers = new Map();
+  const debouncePending = new Map();
 
   function storageKey(namespace) {
     return `${STORAGE_PREFIX}${namespace}`;
@@ -49,6 +50,7 @@ export function createPersistenceService(storage = getDefaultStorage()) {
 
   function debounceSave(namespace, dataOrFn, delayMs = 300) {
     const timerKey = storageKey(namespace);
+    debouncePending.set(timerKey, dataOrFn);
     if (debounceTimers.has(timerKey)) {
       clearTimeout(debounceTimers.get(timerKey));
     }
@@ -56,7 +58,9 @@ export function createPersistenceService(storage = getDefaultStorage()) {
       timerKey,
       setTimeout(() => {
         debounceTimers.delete(timerKey);
-        const data = typeof dataOrFn === "function" ? dataOrFn() : dataOrFn;
+        const pending = debouncePending.get(timerKey);
+        debouncePending.delete(timerKey);
+        const data = typeof pending === "function" ? pending() : pending;
         save(namespace, data);
       }, delayMs),
     );
@@ -64,9 +68,16 @@ export function createPersistenceService(storage = getDefaultStorage()) {
 
   function flushDebounce(namespace) {
     const timerKey = storageKey(namespace);
-    if (!debounceTimers.has(timerKey)) return;
-    clearTimeout(debounceTimers.get(timerKey));
-    debounceTimers.delete(timerKey);
+    const pending = debouncePending.get(timerKey);
+    if (!pending && !debounceTimers.has(timerKey)) return;
+    if (debounceTimers.has(timerKey)) {
+      clearTimeout(debounceTimers.get(timerKey));
+      debounceTimers.delete(timerKey);
+    }
+    debouncePending.delete(timerKey);
+    if (pending == null) return;
+    const data = typeof pending === "function" ? pending() : pending;
+    save(namespace, data);
   }
 
   return { storageKey, load, save, debounceSave, flushDebounce };

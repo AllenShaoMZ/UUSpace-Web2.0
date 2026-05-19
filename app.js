@@ -24,7 +24,8 @@ const state = {
   sheetStats: [],
   sheetLiveValues: {},
   activeSheet: 0,
-  activeTableViewId: "",
+  dockHighlightSheet: 0,
+  activeTableViewId: "sheet-0",
   tableViews: [],
   selectedWaveCodes: new Set(),
   waveDrawerOpen: false,
@@ -296,7 +297,51 @@ function hydrateWorkspaceFromStorage() {
   api.applyWorkspaceSettings(state, api.loadWorkspaceSettings(persist));
   state.tableSearchHistory = normalizeTableSearchHistory(state.tableSearchHistory);
   if (!state.curveViews.length) state.activeCurveViewId = "";
-  if (!state.tableViews.length) state.activeTableViewId = "";
+  state.tableViews = (state.tableViews || []).filter((view) => view && !view.builtin);
+  ensureBuiltinTableViews();
+  if (
+    !state.activeTableViewId ||
+    state.activeTableViewId === "整表" ||
+    !state.tableViews.some((view) => view.id === state.activeTableViewId)
+  ) {
+    state.activeTableViewId = builtinTableId(Number.isFinite(state.activeSheet) ? state.activeSheet : 0);
+  }
+  const activeView = getActiveTableView();
+  if (activeView) state.activeSheet = Number(activeView.sheet);
+  if (!Number.isFinite(state.dockHighlightSheet)) state.dockHighlightSheet = 0;
+}
+
+const BUILTIN_TABLE_ID_PREFIX = "sheet-";
+
+function builtinTableId(sheetIndex) {
+  return `${BUILTIN_TABLE_ID_PREFIX}${sheetIndex}`;
+}
+
+function ensureBuiltinTableViews() {
+  const customs = (state.tableViews || []).filter((view) => view && !view.builtin);
+  const builtins = protocolRules.map((rule) => ({
+    id: builtinTableId(rule.sheet),
+    name: `表${rule.sheet}`,
+    sheet: rule.sheet,
+    builtin: true,
+  }));
+  state.tableViews = [...builtins, ...customs];
+}
+
+function getActiveTableView() {
+  ensureBuiltinTableViews();
+  const matched = state.tableViews.find((view) => view.id === state.activeTableViewId);
+  if (matched) return matched;
+  return (
+    state.tableViews.find((view) => view.builtin && Number(view.sheet) === Number(state.activeSheet)) ||
+    state.tableViews.find((view) => view.builtin) ||
+    null
+  );
+}
+
+function clearTableSearch({ persist = true } = {}) {
+  state.tableSearch = "";
+  if (persist) schedulePersistWorkspace();
 }
 
 function getSearchHistoryApi() {
@@ -415,6 +460,7 @@ function resizeTrendCanvas() {
 
 function init() {
   hydrateWorkspaceFromStorage();
+  ensureBuiltinTableViews();
   const verEl = document.getElementById("appVersion");
   if (verEl) verEl.textContent = `v${APP_VERSION}`;
   renderNavigation();
@@ -425,6 +471,9 @@ function init() {
   connectUdpBridge();
   startClock();
   window.addEventListener("beforeunload", flushPersistWorkspace);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushPersistWorkspace();
+  });
   store.subscribe(["sheetStats", "sheetLiveValues"], () => {
     if (state.activeView === "table") scheduleUdpViewRefresh();
   });
@@ -454,20 +503,22 @@ function renderNavigation() {
 }
 
 function renderDock() {
-  $("#summaryList").innerHTML = summaryItems
-    .map(
-      (item) => `
-        <article class="summary-item" data-summary-param="${item.code}">
-          <header>
-            <strong>${item.name}</strong>
-            <em>${item.value}</em>
-          </header>
-          <div class="mini-bar"><span style="width:${item.percent}%"></span></div>
-          <span class="tag ${item.status === "warn" ? "warn" : "ok"}">${item.code}</span>
-        </article>
-      `,
-    )
+  const sheetCards = protocolRules
+    .map((rule) => {
+      const stat = getSheetStat(rule.sheet);
+      const count = getSheetDefinition(rule.sheet).length || stat.definitionCount || 0;
+      const isActive = Number(rule.sheet) === Number(state.dockHighlightSheet);
+      return `
+        <button type="button" class="dock-sheet-tab ${isActive ? "active" : ""} ${stat.total > 0 ? "live" : ""}" data-dock-sheet="${rule.sheet}">
+          <strong>Sheet ${rule.sheet}</strong>
+          <span>端口 ${rule.port}</span>
+          <em>${count} 项 · ${stat.total || 0} 包</em>
+        </button>
+      `;
+    })
     .join("");
+
+  $("#summaryList").innerHTML = `<div class="dock-sheet-grid" aria-label="Sheet 0-7 摘要">${sheetCards}</div>`;
 
   $("#alarmList").innerHTML = alarms
     .map(
@@ -484,10 +535,12 @@ function renderDock() {
     )
     .join("");
 
-  document.querySelectorAll("[data-summary-param]").forEach((item) => {
-    item.addEventListener("click", () => {
-      state.selectedParamCode = item.dataset.summaryParam;
-      switchView("table");
+  document.querySelectorAll("[data-dock-sheet]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.dockHighlightSheet = Number(btn.dataset.dockSheet);
+      document.querySelectorAll("[data-dock-sheet]").forEach((tab) => {
+        tab.classList.toggle("active", Number(tab.dataset.dockSheet) === state.dockHighlightSheet);
+      });
     });
   });
 }
@@ -825,18 +878,21 @@ function telemetryStatus(value) {
 }
 
 function getParamDecimals(paramOrCode, definitionDecimals) {
-  if (definitionDecimals != null && definitionDecimals !== "") return Number(definitionDecimals);
+  if (definitionDecimals != null && definitionDecimals !== "" && Number.isFinite(Number(definitionDecimals))) {
+    return Number(definitionDecimals);
+  }
   const code = typeof paramOrCode === "string" ? paramOrCode : paramOrCode?.code;
   const fromState = code != null ? state.telemetry.decimals[code] : undefined;
-  if (fromState != null && fromState !== "") return Number(fromState);
+  if (fromState != null && fromState !== "" && Number.isFinite(Number(fromState))) return Number(fromState);
   const fromParam = typeof paramOrCode === "object" && paramOrCode ? paramOrCode.decimals : undefined;
-  if (fromParam != null && fromParam !== "") return Number(fromParam);
+  if (fromParam != null && fromParam !== "" && Number.isFinite(Number(fromParam))) return Number(fromParam);
   return -1;
 }
 
-function formatNumericTelemetry(value, decimals) {
+function formatNumericTelemetry(value, decimals = -1) {
   const fn = window.formatTelemetryNumber;
-  if (typeof fn === "function") return fn(value, { decimals: getParamDecimals(null, decimals) });
+  const resolved = Number.isFinite(Number(decimals)) ? Number(decimals) : -1;
+  if (typeof fn === "function") return fn(value, { decimals: resolved });
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
   return String(value);
@@ -907,10 +963,12 @@ function getTelemetryRowsForSheet(sheetIndex) {
 }
 
 function getActiveTelemetryRows() {
-  let rows = getTelemetryRowsForSheet(state.activeSheet);
-  const view = state.tableViews.find((item) => item.id === state.activeTableViewId);
-  if (view) {
-    rows = rows.filter((row) => Number(view.sheet) === Number(state.activeSheet) && view.codes.includes(row.code));
+  const view = getActiveTableView();
+  const sheetIndex = view ? Number(view.sheet) : Number(state.activeSheet);
+  state.activeSheet = sheetIndex;
+  let rows = getTelemetryRowsForSheet(sheetIndex);
+  if (view?.codes?.length) {
+    rows = rows.filter((row) => view.codes.includes(row.code));
   }
   return rows;
 }
@@ -992,8 +1050,7 @@ function hasMeaningfulText(value) {
 }
 
 function renderParamValueCell(param) {
-  const valueText = formatTelemetryValue(param);
-  return `<div>${valueText}</div>`;
+  return `<div>${formatTelemetryValue(param)}</div>`;
 }
 
 function colorForCode(code) {
@@ -1405,7 +1462,15 @@ function flushCurveChartsNow() {
     if (option.legend && entry.legendSelected) {
       option.legend = { ...option.legend, selected: { ...entry.legendSelected } };
     }
-    entry.chart.setOption(option, { notMerge: true });
+    if (!entry.hasRendered) {
+      entry.chart.setOption(option, { notMerge: true });
+      entry.hasRendered = true;
+    } else {
+      entry.chart.setOption(
+        { series: option.series, xAxis: option.xAxis, yAxis: option.yAxis, tooltip: option.tooltip },
+        { notMerge: false, lazyUpdate: true },
+      );
+    }
     entry.chart.resize();
   });
 }
@@ -1481,33 +1546,19 @@ function renderTelemetryTable() {
   });
   const rows = filteredRows;
   const sheetStat = getSheetStat(state.activeSheet);
-  const selectedView = state.tableViews.find((view) => view.id === state.activeTableViewId);
+  const selectedView = getActiveTableView();
+  const customTableViews = state.tableViews.filter((view) => !view.builtin);
   const selectedCodesCount = state.selectedWaveCodes.size;
 
   return `
     <div class="view table-view">
       <section class="view-surface table-surface">
         <div class="view-header">
-          <div class="view-title">遥测表格<small>端口 7101-7108 分别对应 Sheet0-Sheet7，勾选波道后到曲线页点「新建曲线页」</small></div>
+          <div class="view-title">遥测表格<small>Sheet 0-7 在左侧「遥测摘要」；主区通过表0-表7切换</small></div>
           <div class="header-actions">
             <button class="ghost-button" data-add-table>添加表格</button>
             <button class="ghost-button" data-refresh-defs>刷新定义</button>
           </div>
-        </div>
-        <div class="sheet-tabs">
-          ${protocolRules
-            .map((rule) => {
-              const stat = getSheetStat(rule.sheet);
-              const count = getSheetDefinition(rule.sheet).length || stat.definitionCount || 0;
-              return `
-                <button class="sheet-tab ${Number(rule.sheet) === Number(state.activeSheet) ? "active" : ""} ${stat.total > 0 ? "live" : ""}" data-sheet="${rule.sheet}">
-                  <strong>Sheet ${rule.sheet}</strong>
-                  <span>${rule.port}</span>
-                  <em>${count} 项 / ${stat.total || 0} 包</em>
-                </button>
-              `;
-            })
-            .join("")}
         </div>
         <div class="table-status-line">
           <span class="tag ${sheetStat.total > 0 ? "ok" : "warn"}">${sheetStat.total > 0 ? "正在刷新" : "等待 UDP"}</span>
@@ -1525,11 +1576,23 @@ function renderTelemetryTable() {
           <div class="segmented" aria-label="参数筛选">
             ${["全部", "告警", "收藏"].map((filter) => `<button class="segment ${state.dataFilter === filter ? "active" : ""}" data-data-filter="${filter}">${filter}</button>`).join("")}
           </div>
-          <div class="segmented table-view-tabs" aria-label="自定义表格">
-            <button class="segment ${!state.activeTableViewId ? "active" : ""}" data-table-view="">整表</button>
-            ${state.tableViews.map((view) => `<button class="segment ${state.activeTableViewId === view.id ? "active" : ""}" data-table-view="${view.id}">${view.name}</button>`).join("")}
+          <div class="segmented table-view-tabs" aria-label="表格切换">
+            ${state.tableViews
+              .filter((view) => view.builtin)
+              .map(
+                (view) =>
+                  `<button class="segment ${state.activeTableViewId === view.id ? "active" : ""}" data-table-view="${view.id}">${view.name}</button>`,
+              )
+              .join("")}
+            ${customTableViews
+              .map(
+                (view) =>
+                  `<button class="segment ${state.activeTableViewId === view.id ? "active" : ""}" data-table-view="${view.id}">${view.name}</button>`,
+              )
+              .join("")}
           </div>
-          ${selectedView ? `<input class="inline-name-input" data-rename-table="${selectedView.id}" value="${escapeAttr(selectedView.name)}" aria-label="修改表格名称" />` : ""}
+          ${selectedView && !selectedView.builtin ? `<input class="inline-name-input" data-rename-table="${selectedView.id}" value="${escapeAttr(selectedView.name)}" aria-label="修改表格名称" />` : ""}
+          ${selectedView && !selectedView.builtin ? `<button type="button" class="ghost-button" data-remove-table-view="${selectedView.id}">删除表格</button>` : ""}
           <button class="ghost-button" data-toggle-wave-drawer>${state.waveDrawerOpen ? "收起波道" : "已选波道"} ${selectedCodesCount}</button>
         </div>
         <div class="data-grid">
@@ -1545,7 +1608,7 @@ function renderTelemetryTable() {
             <h3 class="table-wrap-title">${
               selectedView
                 ? `${escapeAttr(selectedView.name)} <small>${rows.length} 行${state.tableSearch.trim() ? ` · 搜索「${escapeAttr(state.tableSearch.trim())}」` : ""}</small>`
-                : `Sheet ${state.activeSheet} 遥测大表 <small>${rows.length}/${filteredRows.length} 行${state.tableSearch.trim() ? ` · 搜索「${escapeAttr(state.tableSearch.trim())}」` : ""}</small>`
+                : `表${state.activeSheet} <small>${rows.length}/${filteredRows.length} 行</small>`
             }</h3>
             <div class="table-scroll" aria-label="遥测参数列表">
             <table class="param-table">
@@ -1775,7 +1838,7 @@ function bindViewActions() {
     if (ev.target.closest && (ev.target.closest("[data-wave-select]") || ev.target.closest("[data-wave-cell]"))) {
       return; // let checkbox cell change handler manage selection, avoid re-render before change event
     }
-    const btn = ev.target.closest && ev.target.closest("[data-sheet],[data-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
+    const btn = ev.target.closest && ev.target.closest("[data-table-view],[data-remove-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
     if (!btn) return;
     if (btn.dataset.searchHistory !== undefined) {
       applyTableSearchValue(btn.dataset.searchHistory, { commitHistory: true });
@@ -1790,30 +1853,44 @@ function bindViewActions() {
       state.dataFilter = btn.dataset.dataFilter;
       return renderView();
     }
-    if (btn.dataset.sheet) {
-      state.activeSheet = Number(btn.dataset.sheet);
-      state.activeTableViewId = "";
-      const rows = getActiveTelemetryRows();
-      if (rows[0]) state.selectedParamCode = rows[0].code;
+    if (btn.dataset.tableView !== undefined) {
+      state.activeTableViewId = btn.dataset.tableView;
+      const view = getActiveTableView();
+      if (view) state.activeSheet = Number(view.sheet);
+      if (view?.builtin) restoreWholeTableView();
+      else {
+        const rows = getActiveTelemetryRows();
+        if (rows[0]) state.selectedParamCode = rows[0].code;
+      }
       schedulePersistWorkspace();
       return renderView();
     }
-    if (btn.dataset.tableView !== undefined) {
-      state.activeTableViewId = btn.dataset.tableView;
-      const rows = getActiveTelemetryRows();
-      if (rows[0]) state.selectedParamCode = rows[0].code;
+    if (btn.dataset.removeTableView) {
+      const removeId = btn.dataset.removeTableView;
+      state.tableViews = state.tableViews.filter((view) => view.builtin || view.id !== removeId);
+      state.activeTableViewId = builtinTableId(state.activeSheet);
+      restoreWholeTableView();
+      clearTableSearch();
       schedulePersistWorkspace();
+      appendStatusEvent("已删除自定义表格");
       return renderView();
     }
     if (btn.dataset.addTable !== undefined) {
       const rows = getSelectedWaveRows();
       if (!rows.length) return appendStatusEvent("请先选择波道", "勾选表格左侧的波道后再添加表格");
+      const customCount = state.tableViews.filter((view) => !view.builtin).length;
       const id = `table-${Date.now()}`;
-      state.tableViews.push({ id, name: `表格${state.tableViews.length + 1}`, sheet: state.activeSheet, codes: rows.map((r) => r.code) });
-      state.activeTableViewId = id;
-      state.selectedWaveCodes.clear();
+      state.tableViews.push({
+        id,
+        name: `表格${customCount + 1}`,
+        sheet: state.activeSheet,
+        codes: rows.map((r) => r.code),
+      });
+      state.activeTableViewId = builtinTableId(state.activeSheet);
+      clearTableSearch();
+      restoreWholeTableView();
       schedulePersistWorkspace();
-      appendStatusEvent(`已添加 Sheet ${state.activeSheet} 自定义表格`, `${rows.length} 个遥测参数 · 已切换到新表`);
+      appendStatusEvent(`已添加自定义表格`, `${rows.length} 个参数 · 已保存到 Tab，当前显示${getActiveTableView()?.name || "表"}`);
       return renderView();
     }
     if (btn.dataset.addCurve !== undefined) {
@@ -2531,11 +2608,33 @@ function formatValue(value) {
 }
 
 function formatTelemetryValue(param) {
+  const code = param?.code;
+  const live = code ? state.sheetLiveValues[String(state.activeSheet)]?.[code] : null;
+  const definition = code
+    ? getSheetDefinition(state.activeSheet).find((item) => item.code === code)
+    : null;
+  if (live) return getTelemetryDisplayValue(live, definition?.decimals).value;
   const raw = String(param.value ?? "").trim();
   if (!raw || raw === "—") return "—";
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return raw;
-  return formatNumericTelemetry(parsed, getParamDecimals(param));
+  return formatNumericTelemetry(parsed, getParamDecimals(param, definition?.decimals));
+}
+
+function restoreWholeTableView() {
+  state.selectedWaveCodes.clear();
+  const view = getActiveTableView();
+  const sheet = view ? Number(view.sheet) : Number(state.activeSheet);
+  if (view?.builtin) {
+    state.activeSheet = sheet;
+    state.activeTableViewId = builtinTableId(sheet);
+  }
+  const rows = getTelemetryRowsForSheet(sheet);
+  if (rows[0]) state.selectedParamCode = rows[0].code;
+  requestAnimationFrame(() => {
+    const scroll = document.querySelector(".table-scroll");
+    if (scroll) scroll.scrollTop = 0;
+  });
 }
 
 function selectTelemetryParam(code) {
@@ -2796,12 +2895,13 @@ function updateSheetStatusLine() {
 }
 
 function updateSheetTabsInPlace() {
-  document.querySelectorAll(".sheet-tab[data-sheet]").forEach((tab) => {
-    const stat = getSheetStat(tab.dataset.sheet);
-    const count = getSheetDefinition(tab.dataset.sheet).length || stat.definitionCount || 0;
+  document.querySelectorAll(".dock-sheet-tab[data-dock-sheet]").forEach((tab) => {
+    const stat = getSheetStat(tab.dataset.dockSheet);
+    const count = getSheetDefinition(tab.dataset.dockSheet).length || stat.definitionCount || 0;
     tab.classList.toggle("live", Number(stat.total || 0) > 0);
+    tab.classList.toggle("active", Number(tab.dataset.dockSheet) === Number(state.dockHighlightSheet));
     const meta = tab.querySelector("em");
-    if (meta) meta.textContent = `${count} 项 / ${stat.total || 0} 包`;
+    if (meta) meta.textContent = `${count} 项 · ${stat.total || 0} 包`;
   });
 }
 
@@ -2926,4 +3026,16 @@ window.UUSPACE_API = {
   connectUdpBridge,
 };
 
-init();
+function bootApp() {
+  if (!getPersistApi() || !getUserSettingsApi() || typeof window.formatTelemetryNumber !== "function") {
+    requestAnimationFrame(bootApp);
+    return;
+  }
+  init();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootApp);
+} else {
+  bootApp();
+}

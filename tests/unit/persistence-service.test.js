@@ -53,4 +53,16 @@ describe("PersistenceService", () => {
     expect(writer).toHaveBeenCalledTimes(1);
     expect(JSON.parse(storage.getItem(persist.storageKey("curve.views")))).toEqual({ n: 1 });
   });
+
+  it("flushDebounce writes pending data immediately", () => {
+    vi.useFakeTimers();
+    const writer = vi.fn(() => ({ saved: true }));
+    persist.debounceSave("workspace.flush", writer, 500);
+    expect(storage.getItem(persist.storageKey("workspace.flush"))).toBeNull();
+    persist.flushDebounce("workspace.flush");
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(storage.getItem(persist.storageKey("workspace.flush")))).toEqual({ saved: true });
+    vi.advanceTimersByTime(500);
+    expect(writer).toHaveBeenCalledTimes(1);
+  });
 });

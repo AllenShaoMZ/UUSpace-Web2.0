@@ -129,9 +129,12 @@ export function buildCurveOption(params) {
         type: "line",
         animation: false,
         snap: true,
-        lineStyle: { type: "dashed", color: "rgba(154, 168, 191, 0.75)", width: 1 },
+        show: true,
+        triggerTooltip: true,
+        lineStyle: { type: "dashed", color: "rgba(154, 168, 191, 0.85)", width: 1 },
         label: { show: false },
       },
+      triggerOn: "mousemove|click",
       formatter: formatCurveAxisTooltip,
     },
     legend: series.length

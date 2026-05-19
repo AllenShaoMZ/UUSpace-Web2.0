@@ -35,7 +35,7 @@
 |------|------|
 | **主 Agent** | 与用户保持 **同一条对话** 统筹全程：读进度、拆任务、验收、更新 checkbox、向用户汇报；用户只需在主对话里下达指令，**不要求用户另开窗口跟子 Agent 对接**。 |
 | **子 Agent** | 由主 Agent 通过 Cursor **Task 工具** 派生；每次只做 `docs/tasks/<模块>.md` 中 **一条**（或主 Agent 明确指定的少量强相关）未勾选子任务。 |
-| **任务来源** | 主 Agent **必须** 依据 `docs/tasks/总体进度.md` 与 `docs/tasks/<模块>.md` 分配任务，并在子 Agent 提示词中写明任务 ID、设计章节、**允许修改文件**、验收与测试要求（见 §5.3 模板）。 |
+| **任务来源** | 主 Agent **必须** 依据 `docs/tasks/总体进度.md` 与 `docs/tasks/<模块>.md` 分配任务，并按 §5.3 写全**目标 / 输入 / 输出 / 步骤**四段任务包。 |
 | **修改边界** | 子 Agent **仅可**改动任务包中列出的文件与逻辑；**禁止**顺手改任务范围外的模块、文件、重构或「顺便优化」。若实现需要扩大 scope，**停止编码**，以问答式向用户提问（见 §九），待确认后再由主 Agent 更新任务包。 |
 | **遇疑必问** | 子 Agent、主 Agent 在业务/设计/接口/验收不明确时，**必须以问答式**向用户提问（条目编号 + 可选方案），**禁止猜测**或擅自扩大实现。 |
 | **代码质量** | **主 Agent** 对子 Agent 产出负责：审查 diff 是否越界、是否符合设计与 §六约定、测试是否覆盖任务；不合格则要求子 Agent 返工或自行修正后再汇总，**不得**将明显越界/未测的改动勾选完成。 |
@@ -124,25 +124,74 @@ python tools\udp_web_server.py --host 0.0.0.0 --http-port 8080 --udp-host 0.0.0.
 | M3 | [tasks/M3-状态显示.md](./tasks/M3-状态显示.md) | — | **不开发** |
 | M4 | [tasks/M4-源码显示.md](./tasks/M4-源码显示.md) | — | **不开发** |
 
-### 5.3 子 Agent 启动话术模板（主 Agent 填写后下发）
+### 5.3 子 Agent 任务包模板（主 Agent 必须写全：目标 / 输入 / 输出 / 步骤）
+
+主 Agent 派生子 Agent 时，**必须**按下列结构填写提示词（可复制模板，不得省略章节）：
 
 ```text
 # Role
 你是 UUSpace Web 2.0 子 Agent。UI：app.js + styles.css；后端以 Python 为主（§5.0）。
 
-【子任务】<模块>-<任务ID>：<一句话描述>
-【模块文件】docs/tasks/<模块>.md 第 N 条 checklist
-【设计】详细设计文档 §x.x
-【后端】Python（默认）：
+## 目标（Goal）
+<一句话说明要达成什么业务结果，例如：「遥测表格勾选波道后不整页刷新，保持滚动位置」>
+
+## 输入（Input）
+- 任务 ID：<模块>-<任务ID>
+- 任务文件：docs/tasks/<模块>.md 第 N 条 checklist
+- 设计依据：详细设计文档 §x.x
+- 允许修改文件：
+  - <path1>
+  - <path2>
+- 依赖/前置：<已完成的模块或接口，无则写「无」>
+- 后端联调（默认 Python）：
   python tools\udp_web_server.py --host 0.0.0.0 --http-port 8080 --udp-host 0.0.0.0 --udp-ports 7101-7108
-  浏览器 http://127.0.0.1:8080/ ；勿用 npm run dev 验遥测大表（勿与 Python 同占 7101–7108）
-【允许修改】<文件列表>
-【禁止】改【允许修改】列表之外的任何文件；改其他模块；不复刻桌面 UI；不实现快捷键/表格拖拽；勿在 Node 复刻多 Sheet 大表解析（除非任务写明）；禁止 drive-by 重构
-【测试】<Vitest 用例>；纯前端任务仍须 npm test 通过
-【验收】<可观察结果>；涉及 API/表格/指令的须在 Python 下手验并文字回报
-【完成后】回报主 Agent（勿直接向用户勾选）；由主 Agent 审查质量后更新 task md
-【遇疑】任何不明确处停止编码，用问答式向用户提问（§九 格式），禁止猜测或擅自扩大 scope
-若 DataSrc=-1 组包或 API 行为不确定，停止并列出问题问用户。
+  浏览器 http://127.0.0.1:8080/
+
+## 输出（Output）
+- 代码：<列出将新增/修改的函数、状态字段或 API 行为>
+- 测试：<Vitest 用例文件与必覆盖场景>
+- 回报主 Agent 的摘要格式：
+  1. 变更文件列表
+  2. npm test 结果
+  3. Python 手验步骤与结果（如适用）
+  4. 是否可勾选 task md
+  5. 风险/未覆盖项
+
+## 步骤（Steps）
+1. 阅读任务文件与设计 §x.x，确认验收标准
+2. 仅修改【允许修改】内文件，实现目标
+3. 编写/更新对应单元测试
+4. 运行 npm test（全绿）
+5. 按【后端联调】手验（涉及表格/UDP/指令时必做）
+6. 自检：无越界修改、无 drive-by 重构
+7. 向主 Agent 回报（勿直接向用户勾选 task）
+
+## 禁止
+- 改【允许修改】列表之外的任何文件
+- 改其他模块；不复刻桌面 UI；不实现快捷键/表格拖拽
+- 禁止 drive-by 重构；禁止擅自扩大 scope
+
+## 遇疑必问
+任何需求/设计/验收不明确时，**停止编码**，用 §九 问答格式向用户提问，禁止猜测。
+```
+
+**填写示例（片段）**：
+
+```text
+## 目标
+实现遥测表格 localStorage 持久化，刷新后恢复自定义表、曲线 Tab 与搜索历史。
+
+## 输入
+- 允许修改：modules/core/user-settings.js、app.js、index.html、tests/unit/user-settings.test.js
+
+## 输出
+- hydrateWorkspaceFromStorage / schedulePersistWorkspace 在启动与变更时生效
+- tests/unit/user-settings.test.js 覆盖 round-trip
+
+## 步骤
+1. 先读 persistence-service 与 §6 键规范
+2. 实现 load/save 与 app.js 挂钩
+3. npm test → 回报主 Agent
 ```
 
 ---

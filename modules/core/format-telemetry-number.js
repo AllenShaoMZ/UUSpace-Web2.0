@@ -21,11 +21,7 @@ export function formatSignificantDigits(n, sigFigs = AUTO_SIG_FIGS) {
   const decPlaces = Math.max(0, sigFigs - 1 - order);
   const rounded = Number.parseFloat(n.toPrecision(sigFigs));
   if (decPlaces === 0) return String(rounded);
-  let text = rounded.toFixed(decPlaces);
-  if (text.includes(".")) {
-    text = text.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
-  }
-  return text;
+  return rounded.toFixed(decPlaces);
 }
 
 export function formatTelemetryNumber(value, { decimals = -1 } = {}) {

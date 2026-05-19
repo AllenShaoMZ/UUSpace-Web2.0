@@ -28,22 +28,22 @@ function formatWithParamDecimals(raw, code, stateDecimals = {}, definitionDecima
 describe("telemetry value display (M1 current value column)", () => {
   it("formats large numbers as scientific notation; small decimals stay decimal", () => {
     expect(formatTelemetryValueDisplay(1e9)).toBe("1.000e+9");
-    expect(formatTelemetryValueDisplay(-1e-5)).toBe("-0.00001");
+    expect(formatTelemetryValueDisplay(-1e-5)).toBe("-0.000010000");
     expect(formatTelemetryValueDisplay(123456789)).toBe("1.235e+8");
   });
 
   it("re-formats pre-rendered scientific strings consistently", () => {
     expect(formatTelemetryValueDisplay("1.000e+9")).toBe("1.000e+9");
-    expect(formatTelemetryValueDisplay("-1.000e-5")).toBe("-0.00001");
+    expect(formatTelemetryValueDisplay("-1.000e-5")).toBe("-0.000010000");
   });
 
   it("shows small magnitudes with ~5 sig figs by default (not 0.00)", () => {
-    expect(formatTelemetryValueDisplay(0.00045)).toBe("0.00045");
-    expect(formatWithParamDecimals(0.00045, "K2001")).toBe("0.00045");
+    expect(formatTelemetryValueDisplay(0.00045)).toBe("0.00045000");
+    expect(formatWithParamDecimals(0.00045, "K2001")).toBe("0.00045000");
   });
 
   it("ignores definition-table fixed decimals unless user overrides in state", () => {
-    expect(formatWithParamDecimals(0.00045, "K2001", {}, 2)).toBe("0.00045");
+    expect(formatWithParamDecimals(0.00045, "K2001", {}, 2)).toBe("0.00045000");
     expect(formatWithParamDecimals(1.2345, "K2001", { K2001: 2 }, 2)).toBe("1.23");
     expect(formatWithParamDecimals(1.23456789, "K2001", { K2001: -1 }, 2)).toBe("1.2346");
   });

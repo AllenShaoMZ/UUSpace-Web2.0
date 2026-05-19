@@ -502,6 +502,71 @@ function renderNavigation() {
   });
 }
 
+function collectTelemetryAlarms() {
+  const items = [];
+  const seen = new Set();
+  protocolRules.forEach((rule) => {
+    const liveMap = state.sheetLiveValues[String(rule.sheet)] || {};
+    const definitions = getSheetDefinition(rule.sheet);
+    definitions.forEach((definition) => {
+      const code = definition.code;
+      if (!code || seen.has(code)) return;
+      const live = liveMap[code];
+      const display = getTelemetryDisplayValue(live, code);
+      if (display.status !== "告警" && display.status !== "关注") return;
+      seen.add(code);
+      const timeRaw = live?.time ?? live?.updatedAt ?? live?.lastTime;
+      items.push({
+        level: display.status === "告警" ? "danger" : "warning",
+        source: `Sheet ${rule.sheet} · ${code}`,
+        text: `${definition.name || code}：${display.value}${definition.unit ? ` ${definition.unit}` : ""}`,
+        time: formatTimeText(timeRaw || Date.now()),
+        code,
+      });
+    });
+  });
+  getAllTelemetryRows().forEach((row) => {
+    if (!row.code || seen.has(row.code)) return;
+    if (row.status !== "告警" && row.status !== "关注") return;
+    seen.add(row.code);
+    items.push({
+      level: row.status === "告警" ? "danger" : "warning",
+      source: row.group || row.frame || "遥测",
+      text: `${row.name || row.code}：${row.value}${row.unit ? ` ${row.unit}` : ""}`,
+      time: formatTimeText(Date.now()),
+      code: row.code,
+    });
+  });
+  return items;
+}
+
+function getAlarmPanelItems() {
+  return [...collectTelemetryAlarms(), ...alarms];
+}
+
+function renderAlarmListHtml() {
+  return getAlarmPanelItems()
+    .map(
+      (alarm) => `
+        <article class="alarm-item ${alarm.level}">
+          <header>
+            <strong>${alarm.source}</strong>
+            <em>${alarm.time}</em>
+          </header>
+          <div>${alarm.text}</div>
+          <span class="tag ${alarm.level === "danger" ? "danger" : "warn"}">${alarm.level === "danger" ? "严重" : "关注"}</span>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function updateAlarmPanelInPlace() {
+  const list = document.getElementById("alarmList");
+  if (!list) return;
+  list.innerHTML = renderAlarmListHtml() || `<div class="empty-hint">暂无告警</div>`;
+}
+
 function renderDock() {
   const sheetCards = protocolRules
     .map((rule) => {
@@ -520,20 +585,7 @@ function renderDock() {
 
   $("#summaryList").innerHTML = `<div class="dock-sheet-grid" aria-label="Sheet 0-7 摘要">${sheetCards}</div>`;
 
-  $("#alarmList").innerHTML = alarms
-    .map(
-      (alarm) => `
-        <article class="alarm-item ${alarm.level}">
-          <header>
-            <strong>${alarm.source}</strong>
-            <em>${alarm.time}</em>
-          </header>
-          <div>${alarm.text}</div>
-          <span class="tag ${alarm.level === "danger" ? "danger" : "warn"}">${alarm.level === "danger" ? "严重" : "关注"}</span>
-        </article>
-      `,
-    )
-    .join("");
+  $("#alarmList").innerHTML = renderAlarmListHtml() || `<div class="empty-hint">暂无告警</div>`;
 
   document.querySelectorAll("[data-dock-sheet]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -877,15 +929,10 @@ function telemetryStatus(value) {
   return value || "正常";
 }
 
-function getParamDecimals(paramOrCode, definitionDecimals) {
-  if (definitionDecimals != null && definitionDecimals !== "" && Number.isFinite(Number(definitionDecimals))) {
-    return Number(definitionDecimals);
-  }
+function getParamDecimals(paramOrCode) {
   const code = typeof paramOrCode === "string" ? paramOrCode : paramOrCode?.code;
   const fromState = code != null ? state.telemetry.decimals[code] : undefined;
   if (fromState != null && fromState !== "" && Number.isFinite(Number(fromState))) return Number(fromState);
-  const fromParam = typeof paramOrCode === "object" && paramOrCode ? paramOrCode.decimals : undefined;
-  if (fromParam != null && fromParam !== "" && Number.isFinite(Number(fromParam))) return Number(fromParam);
   return -1;
 }
 
@@ -898,33 +945,34 @@ function formatNumericTelemetry(value, decimals = -1) {
   return String(value);
 }
 
-function getTelemetryDisplayValue(live, definitionDecimals) {
+function getTelemetryDisplayValue(live, code) {
   const rawStatus = live && live.status != null ? String(live.status).trim() : "";
   const normalizedStatus = rawStatus ? telemetryStatus(rawStatus) : "等待";
-  if (rawStatus) {
+  const decimals = getParamDecimals(code);
+  if (rawStatus && normalizedStatus !== "正常") {
     return { value: rawStatus, status: normalizedStatus };
   }
   if (live && Number.isFinite(Number(live.value))) {
     return {
-      value: formatNumericTelemetry(live.value, definitionDecimals ?? live.decimals),
-      status: "正常",
+      value: formatNumericTelemetry(live.value, decimals),
+      status: normalizedStatus === "等待" ? "正常" : normalizedStatus,
     };
   }
   const text = live ? String(live.valueText ?? "").trim() : "";
-  if (!text) return { value: "—", status: "关注" };
+  if (!text) return { value: "—", status: normalizedStatus === "等待" ? "关注" : normalizedStatus };
   const parsed = Number(text);
   if (Number.isFinite(parsed)) {
     return {
-      value: formatNumericTelemetry(parsed, definitionDecimals ?? live?.decimals),
-      status: "正常",
+      value: formatNumericTelemetry(parsed, decimals),
+      status: normalizedStatus === "等待" ? "正常" : normalizedStatus,
     };
   }
-  return { value: text, status: "正常" };
+  return { value: text, status: normalizedStatus === "等待" ? "正常" : normalizedStatus };
 }
 
 function mapDefinitionToRow(definition, sheetIndex) {
   const live = state.sheetLiveValues[String(sheetIndex)] && state.sheetLiveValues[String(sheetIndex)][definition.code];
-  const display = getTelemetryDisplayValue(live, definition.decimals);
+  const display = getTelemetryDisplayValue(live, definition.code);
   return {
     index: definition.index,
     serialNo: definition.serialNo,
@@ -1296,7 +1344,7 @@ function disposeAllCurveCharts() {
   }
 }
 
-function buildCurveOptionForChart(chart) {
+function buildCurveOptionForChart(chart, axisZoomOverride) {
   const api = getCurveChartApi();
   const now = Date.now();
   const codes = [...new Set((chart.codes || []).filter(Boolean))];
@@ -1311,8 +1359,7 @@ function buildCurveOptionForChart(chart) {
       samples: state.curveBuffers[code] || [],
     };
   });
-  const entry = curveChartInstances.get(chart.id);
-  const zoom = chart.zoom || entry?.axisZoom;
+  const zoom = axisZoomOverride;
   const axisZoom =
     zoom && [zoom.xMin, zoom.xMax, zoom.yMin, zoom.yMax].some(Number.isFinite)
       ? { xMin: zoom.xMin, xMax: zoom.xMax, yMin: zoom.yMin, yMax: zoom.yMax }
@@ -1364,15 +1411,105 @@ function mountCurveCharts() {
   flushCurveChartsNow();
 }
 
-function saveChartAxisZoom(chartId, axisZoom) {
-  if (!chartId || !axisZoom) return;
-  state.curveViews = getCurveViews().map((tab) => ({
-    ...tab,
-    charts: (tab.charts || []).map((chart) => (chart.id === chartId ? { ...chart, zoom: { ...axisZoom } } : chart)),
-  }));
-  const entry = curveChartInstances.get(chartId);
-  if (entry) entry.axisZoom = { ...axisZoom };
-  schedulePersistWorkspace();
+let curveZoomModalEl = null;
+let curveZoomModalChart = null;
+let curveZoomModalState = null;
+
+function ensureCurveZoomModalDom() {
+  if (curveZoomModalEl) return curveZoomModalEl;
+  const root = document.createElement("div");
+  root.className = "curve-zoom-modal";
+  root.id = "curveZoomModal";
+  root.innerHTML = `
+    <div class="curve-zoom-dialog" role="dialog" aria-modal="true" aria-labelledby="curveZoomModalTitle">
+      <header class="curve-zoom-header">
+        <h3 id="curveZoomModalTitle">区域放大</h3>
+        <div class="curve-zoom-actions">
+          <button type="button" class="ghost-button" data-curve-zoom-reset>复原视口</button>
+          <button type="button" class="ghost-button" data-curve-zoom-close>关闭</button>
+        </div>
+      </header>
+      <div class="curve-zoom-chart-host" data-curve-zoom-chart></div>
+    </div>
+  `;
+  root.addEventListener("click", (ev) => {
+    if (ev.target === root) closeCurveZoomModal();
+  });
+  root.querySelector("[data-curve-zoom-close]")?.addEventListener("click", () => closeCurveZoomModal());
+  root.querySelector("[data-curve-zoom-reset]")?.addEventListener("click", () => resetCurveZoomModal());
+  document.body.appendChild(root);
+  curveZoomModalEl = root;
+  return root;
+}
+
+function flushCurveZoomModalChart() {
+  if (!curveZoomModalChart || !curveZoomModalState?.chart) return;
+  const option = buildCurveOptionForChart(curveZoomModalState.chart, curveZoomModalState.axisZoom);
+  if (!curveZoomModalState.hasRendered) {
+    curveZoomModalChart.setOption(option, { notMerge: true });
+    curveZoomModalState.hasRendered = true;
+  } else {
+    curveZoomModalChart.setOption(
+      { series: option.series, xAxis: option.xAxis, yAxis: option.yAxis, tooltip: option.tooltip },
+      { notMerge: false, lazyUpdate: true },
+    );
+  }
+  curveZoomModalChart.resize();
+}
+
+function openCurveZoomModal(chartId, axisZoom) {
+  const view = getActiveCurveView();
+  const chart = (view?.charts || []).find((item) => item.id === chartId);
+  if (!chart) return;
+  const root = ensureCurveZoomModalDom();
+  const title = root.querySelector("#curveZoomModalTitle");
+  if (title) title.textContent = chart.name || "区域放大";
+  root.classList.add("open");
+  if (curveZoomModalState?.flushTimer) clearInterval(curveZoomModalState.flushTimer);
+  if (curveZoomModalChart) {
+    try {
+      curveZoomModalChart.dispose();
+    } catch {
+      /* ignore */
+    }
+  }
+  curveZoomModalState = {
+    chartId,
+    chart,
+    axisZoom: { ...axisZoom },
+    hasRendered: false,
+    flushTimer: setInterval(() => {
+      if (root.classList.contains("open")) flushCurveZoomModalChart();
+    }, getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 150),
+  };
+  const host = root.querySelector("[data-curve-zoom-chart]");
+  const echarts = getEchartsLib();
+  if (!host || !echarts) return;
+  curveZoomModalChart = echarts.init(host, "mission-curve", { renderer: "canvas" });
+  flushCurveZoomModalChart();
+}
+
+function resetCurveZoomModal() {
+  if (!curveZoomModalState) return;
+  curveZoomModalState.axisZoom = null;
+  curveZoomModalState.hasRendered = false;
+  flushCurveZoomModalChart();
+}
+
+function closeCurveZoomModal() {
+  if (curveZoomModalState?.flushTimer) {
+    clearInterval(curveZoomModalState.flushTimer);
+  }
+  if (curveZoomModalChart) {
+    try {
+      curveZoomModalChart.dispose();
+    } catch {
+      /* ignore */
+    }
+  }
+  curveZoomModalChart = null;
+  curveZoomModalState = null;
+  curveZoomModalEl?.classList.remove("open");
 }
 
 function bindCurveShiftZoom(host, chart, chartId) {
@@ -1434,12 +1571,11 @@ function bindCurveShiftZoom(host, chart, chartId) {
     const yMin = Math.min(Number(a[1]), Number(b[1]));
     const yMax = Math.max(Number(a[1]), Number(b[1]));
     if (![xMin, xMax, yMin, yMax].every(Number.isFinite)) return;
-    saveChartAxisZoom(chartId, { xMin, xMax, yMin, yMax });
-    flushCurveChartsNow();
+    openCurveZoomModal(chartId, { xMin, xMax, yMin, yMax });
   };
 
   host.addEventListener("mousedown", (e) => {
-    if (!e.shiftKey || e.button !== 0) return;
+    if (!e.ctrlKey || e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     const rect = host.getBoundingClientRect();
@@ -1495,6 +1631,7 @@ function startCurveChartLoop() {
       return;
     }
     flushCurveChartsNow();
+    if (curveZoomModalEl?.classList.contains("open")) flushCurveZoomModalChart();
   }, delay);
 }
 
@@ -1705,7 +1842,7 @@ function renderCurve() {
       <section class="trend-stack">
         <div class="curve-workbar">
           <div class="curve-page-toolbar">
-            <div class="view-title curve-page-toolbar-title">曲线 Tab<small>${curveViews.length} 个 Tab · ${plottedCodes.length} 个通道 · Shift+拖框放大</small></div>
+            <div class="view-title curve-page-toolbar-title">曲线 Tab<small>${curveViews.length} 个 Tab · ${plottedCodes.length} 个通道 · Ctrl+拖框放大（弹窗实时）</small></div>
             <div class="curve-page-tabs-scroll">
               <div class="segmented curve-page-tabs" aria-label="曲线 Tab 切换">
                 ${curveViews
@@ -2613,12 +2750,12 @@ function formatTelemetryValue(param) {
   const definition = code
     ? getSheetDefinition(state.activeSheet).find((item) => item.code === code)
     : null;
-  if (live) return getTelemetryDisplayValue(live, definition?.decimals).value;
+  if (live) return getTelemetryDisplayValue(live, code).value;
   const raw = String(param.value ?? "").trim();
   if (!raw || raw === "—") return "—";
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return raw;
-  return formatNumericTelemetry(parsed, getParamDecimals(param, definition?.decimals));
+  return formatNumericTelemetry(parsed, getParamDecimals(code ?? param));
 }
 
 function restoreWholeTableView() {
@@ -2868,6 +3005,7 @@ function scheduleUdpViewRefresh() {
 }
 
 function updateUdpViewInPlace() {
+  updateAlarmPanelInPlace();
   if (state.activeView === "table") {
     updateSheetStatusLine();
     updateTableRowsInPlace();
@@ -2912,7 +3050,7 @@ function updateTableRowsInPlace() {
   document.querySelectorAll("tr[data-param-row]").forEach((row) => {
     const live = liveValues[row.dataset.paramRow];
     if (!live) return;
-    const display = getTelemetryDisplayValue(live, defByCode.get(row.dataset.paramRow)?.decimals);
+    const display = getTelemetryDisplayValue(live, row.dataset.paramRow);
     const valueText = display.value;
     const hexText = formatRawHex(live.raw ?? live.hex);
     updateValueCell(row.querySelector("[data-param-value]"), row.dataset.paramRow, valueText);

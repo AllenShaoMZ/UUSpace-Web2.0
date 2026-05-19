@@ -42,10 +42,7 @@ def format_telemetry_display_value(value: float, sig_figs: int = 5) -> str:
     order = math.floor(math.log10(abs_v))
     dec = max(0, sig_figs - 1 - int(order))
     rounded = float(f"{value:.12g}")
-    text = f"{rounded:.{dec}f}"
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
+    return f"{rounded:.{dec}f}"
 
 
 def resolve_project_root(root: str | None = None) -> str:

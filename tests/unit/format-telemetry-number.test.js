@@ -11,7 +11,7 @@ describe("formatTelemetryNumber", () => {
 
   it("uses scientific notation when |v| > 1e8", () => {
     expect(formatTelemetryNumber(1e9)).toBe("1.000e+9");
-    expect(formatTelemetryNumber(-1e-5)).toBe("-0.00001");
+    expect(formatTelemetryNumber(-1e-5)).toBe("-0.000010000");
     expect(formatTelemetryNumber(1.23e8)).toBe("1.230e+8");
     expect(formatTelemetryNumber("1e9")).toBe("1.000e+9");
     expect(formatTelemetryNumber(100_000_001)).toBe("1.000e+8");
@@ -19,15 +19,15 @@ describe("formatTelemetryNumber", () => {
   });
 
   it("shows small decimals from first non-zero digit (auto mode)", () => {
-    expect(formatTelemetryNumber(0.00045, { decimals: -1 })).toBe("0.00045");
-    expect(formatTelemetryNumber(0.00003, { decimals: -1 })).toBe("0.00003");
-    expect(formatTelemetryNumber(0.00012, { decimals: -1 })).toBe("0.00012");
-    expect(formatSignificantDigits(0.00045, 5)).toBe("0.00045");
+    expect(formatTelemetryNumber(0.00045, { decimals: -1 })).toBe("0.00045000");
+    expect(formatTelemetryNumber(0.00003, { decimals: -1 })).toBe("0.000030000");
+    expect(formatTelemetryNumber(0.00012, { decimals: -1 })).toBe("0.00012000");
+    expect(formatSignificantDigits(0.00045, 5)).toBe("0.00045000");
   });
 
   it("uses ~5 significant digits when decimals is -1", () => {
     expect(formatTelemetryNumber(1.23456789, { decimals: -1 })).toBe("1.2346");
-    expect(formatTelemetryNumber(0.5, { decimals: -1 })).toBe("0.5");
+    expect(formatTelemetryNumber(0.5, { decimals: -1 })).toBe("0.50000");
     expect(formatTelemetryNumber(0, { decimals: -1 })).toBe("0");
   });
 

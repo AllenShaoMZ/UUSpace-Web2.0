@@ -288,7 +288,14 @@ button {
   min-width: 0;
   min-height: 0;
   padding: 14px;
-  overflow: hidden auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.stage > .view {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .dock-panel,
@@ -780,6 +787,33 @@ button {
   min-height: 0;
 }
 
+/* 指令控制：左侧卡片列表 + 右侧宽详情（约 46% / 54%） */
+.view.split-grid.command-split {
+  height: calc(100vh - 52px - 42px - 82px - 28px);
+  min-height: 520px;
+  align-content: stretch;
+}
+
+.split-grid.command-split {
+  grid-template-columns: minmax(0, 0.92fr) minmax(440px, 1.08fr);
+  gap: 12px;
+}
+
+.command-split > .view-surface {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.command-list-pane .command-toolbar {
+  flex: 0 0 auto;
+}
+
+.command-list-pane .view-header {
+  flex: 0 0 auto;
+}
+
 .connection-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(220px, 1fr));
@@ -1128,6 +1162,44 @@ button {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(10, 12, 17, 0.32);
+  flex-wrap: wrap;
+}
+
+.curve-page-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.curve-page-toolbar-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.curve-page-tabs-scroll {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.curve-page-tabs-scroll .curve-page-tabs {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-bottom: 0;
+}
+
+.curve-page-rename {
+  flex: 0 0 auto;
+  width: 140px;
+  min-width: 100px;
 }
 
 .curve-grid {
@@ -1153,10 +1225,93 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.curve-page-tabs {
+  flex-wrap: nowrap;
+}
+
+.curve-page-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.curve-page-surface {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  box-shadow: none;
+  background: transparent;
+  border: none;
+}
+
+.curve-page-surface .curve-page-grid {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: rgba(10, 12, 17, 0.28);
+}
+
+.curve-page-grid {
+  display: grid;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  align-content: stretch;
+  grid-auto-rows: minmax(220px, 1fr);
+}
+
+.curve-page-grid.columns-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+.curve-page-grid.columns-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.curve-page-grid.columns-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.curve-page-grid.columns-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.curve-page-grid.columns-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.curve-page-grid.columns-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.curve-page-grid.columns-7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.curve-page-grid.columns-8 { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.curve-page-grid.columns-9 { grid-template-columns: repeat(9, minmax(0, 1fr)); }
+.curve-page-grid.columns-10 { grid-template-columns: repeat(10, minmax(0, 1fr)); }
+
+.curve-chart-cell {
+  min-height: 220px;
+}
+
+.curve-chart-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  padding: 0;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.curve-chart-panel .curve-chart-host {
+  flex: 1;
+  min-height: 280px;
+}
+
+.curve-layout-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted2);
+  font-size: 13px;
+}
+
+.curve-layout-select select {
+  min-width: 72px;
+}
+
 .chart-wrap {
   position: relative;
   min-height: 0;
   padding: 12px;
+}
+
+.curve-page-grid .chart-wrap.curve-chart-panel {
+  padding: 0;
 }
 
 .chart-meta {
@@ -1169,6 +1324,22 @@ button {
   font-size: 12px;
 }
 
+.curve-chart-caption {
+  flex-wrap: wrap;
+  min-height: 28px;
+  height: auto;
+  padding: 4px 8px 0;
+  justify-content: flex-end;
+}
+
+.curve-chart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+  width: 100%;
+}
+
 .trend-canvas {
   display: block;
   width: 100%;
@@ -1177,6 +1348,15 @@ button {
   border: 1px solid rgba(37, 46, 66, 0.72);
   border-radius: 8px;
   background: rgba(5, 7, 11, 0.54);
+}
+
+.curve-chart-host {
+  width: 100%;
+  min-height: 280px;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 .curve-panel-actions {
@@ -1243,8 +1423,44 @@ button {
 }
 
 .command-detail {
-  min-width: 340px;
-  max-width: 520px;
+  overflow: hidden;
+}
+
+.command-detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px 14px 16px;
+  overflow: auto;
+}
+
+.command-detail-block {
+  margin-top: 14px;
+}
+
+.command-detail-block strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.command-detail-desc {
+  margin: 0;
+  color: var(--muted2);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.command-detail-hex {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
+  color: #b9c6ff;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: min(42vh, 360px);
   overflow: auto;
 }
 
@@ -1294,6 +1510,90 @@ button {
 .command-toolbar .search-box,
 .event-toolbar .search-box {
   max-width: 320px;
+}
+
+.column-config-anchor {
+  position: relative;
+}
+
+.column-config-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: min(280px, calc(100vw - 32px));
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+}
+
+.column-config-panel.open {
+  display: grid;
+  gap: 10px;
+}
+
+.column-config-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.column-config-head strong {
+  font-size: 13px;
+}
+
+.column-config-hint {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.column-config-list {
+  display: grid;
+  gap: 4px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.column-config-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.column-config-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.column-config-item.locked {
+  opacity: 0.72;
+  cursor: default;
+}
+
+.column-config-item input {
+  margin: 0;
+}
+
+.column-config-lock {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.column-config-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+  border-top: 1px solid rgba(37, 46, 66, 0.65);
 }
 
 .sheet-tabs {
@@ -1385,11 +1685,24 @@ button {
   padding: 0 12px 12px;
 }
 
+.view.table-view {
+  height: calc(100vh - 52px - 42px - 82px - 28px);
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.view.table-view > .table-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .table-surface {
   display: grid;
   grid-template-rows: auto auto auto auto minmax(0, 1fr);
-  height: calc(100vh - 52px - 42px - 82px - 28px);
   min-height: 0;
+  height: 100%;
 }
 
 .table-surface .data-grid {
@@ -1420,6 +1733,8 @@ button {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .table-surface .favorite-rail,
@@ -1505,10 +1820,15 @@ button {
 
 .param-table {
   width: 100%;
-  min-width: 760px;
+  min-width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 13px;
+}
+
+.param-table th[data-column="select"],
+.param-table td[data-column="select"] {
+  text-align: center;
 }
 
 .param-table th,
@@ -1533,10 +1853,51 @@ button {
 }
 
 .param-table th {
+  position: relative;
   color: var(--muted2);
   font-weight: 600;
   text-align: left;
   background: rgba(255, 255, 255, 0.025);
+}
+
+.param-table th .th-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 6px;
+}
+
+.param-table .column-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 3;
+}
+
+.param-table .column-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 20%;
+  right: 3px;
+  width: 1px;
+  height: 60%;
+  background: rgba(118, 131, 155, 0.45);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.param-table th:hover .column-resize-handle::after,
+body.telemetry-column-resizing .param-table .column-resize-handle::after {
+  opacity: 1;
+}
+
+body.telemetry-column-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .param-table tr.selected-row td {
@@ -1690,18 +2051,106 @@ button {
   color: var(--warning);
 }
 
-.command-grid {
+.command-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 12px 12px;
+  overflow: auto;
+}
+
+.command-list-empty {
+  padding: 24px 12px;
+}
+
+.command-list-card {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: 108px minmax(0, 1fr) minmax(88px, 120px) 72px;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 12, 17, 0.38);
+  cursor: pointer;
+}
+
+.command-list-card:hover,
+.command-list-card.selected {
+  border-color: rgba(91, 124, 250, 0.72);
+  background: rgba(91, 124, 250, 0.09);
+}
+
+.command-list-code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.command-list-name {
+  font-size: 13px;
+  color: var(--muted2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.command-list-category {
+  justify-self: end;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.command-list-card .send-mini {
+  justify-self: end;
+}
+
+.command-detail-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 16px;
+  font-size: inherit;
+  font-weight: normal;
+}
+
+.command-detail-code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.command-detail-name {
+  font-size: 14px;
+  color: var(--muted2);
+  line-height: 1.45;
+}
+
+/* 兼容旧类名（若仍有引用） */
+.command-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 0 12px 12px;
 }
 
 .command-card {
   display: grid;
-  gap: 10px;
-  min-height: 154px;
-  padding: 13px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: auto;
+  padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(10, 12, 17, 0.38);
@@ -1711,31 +2160,6 @@ button {
 .command-card.selected {
   border-color: rgba(91, 124, 250, 0.72);
   background: rgba(91, 124, 250, 0.09);
-}
-
-.command-card header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.command-card h3 {
-  margin: 0;
-  font-size: 16px;
-}
-
-.command-card p {
-  margin: 0;
-  color: var(--muted2);
-  font-size: 13px;
-}
-
-.command-card footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
 }
 
 .send-mini {

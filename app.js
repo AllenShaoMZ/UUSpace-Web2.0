@@ -44,7 +44,6 @@ const state = {
   channels: new Set(),
   curveViews: [],
   activeCurveViewId: "",
-  curveLayoutColumns: 1,
   curveAnimationFrame: null,
   isComposing: false,
   pendingCommandId: "",
@@ -260,11 +259,20 @@ function createStore(initialState) {
 
 const store = createStore(state);
 
+/** @type {Map<string, { chart: object, host: Element, legendSelected: Record<string, boolean> }>} */
+const curveChartInstances = new Map();
+let curveChartFlushTimer = null;
+let curveChartFlushInterval = null;
+
 function switchView(viewId) {
   if (!views.some((view) => view.id === viewId)) return;
   if (state.activeView === viewId) return;
   if (state.activeView === "table" && viewId === "curve" && state.selectedWaveCodes.size) {
     state.pendingCurveCodes = [...new Set([...state.pendingCurveCodes, ...state.selectedWaveCodes])];
+  }
+  if (viewId !== "curve") {
+    stopCurveChartLoop();
+    disposeAllCurveCharts();
   }
   if (state.curveAnimationFrame && viewId !== "curve") {
     cancelAnimationFrame(state.curveAnimationFrame);
@@ -305,8 +313,11 @@ function init() {
     if (state.activeView === "table") scheduleUdpViewRefresh();
   });
   window.addEventListener("resize", () => {
+    if (state.activeView === "curve") {
+      mountCurveCharts();
+      return;
+    }
     resizeTrendCanvas();
-    if (state.activeView === "curve") renderView();
   });
 }
 
@@ -394,10 +405,10 @@ function renderView() {
   bindViewActions();
 
   if (state.activeView === "curve") {
-    resizeTrendCanvas();
-    if (!state.curveAnimationFrame) {
-      state.curveAnimationFrame = requestAnimationFrame(drawTrendChart);
-    }
+    requestAnimationFrame(() => {
+      mountCurveCharts();
+      startCurveChartLoop();
+    });
   }
 }
 
@@ -881,11 +892,12 @@ function colorForCode(code) {
 function pushCurvePoint(code, value, time) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return;
-  if (!state.curveBuffers[code]) state.curveBuffers[code] = [];
-  state.curveBuffers[code].push({ time: time || Date.now(), value: numeric });
-  if (state.curveBuffers[code].length > 180) {
-    state.curveBuffers[code].splice(0, state.curveBuffers[code].length - 180);
-  }
+  const api = getCurveChartApi();
+  const sample = { time: time || Date.now(), value: numeric };
+  const buffer = state.curveBuffers[code] || [];
+  state.curveBuffers[code] = api?.appendCurveSample
+    ? api.appendCurveSample(buffer, sample, { now: sample.time, maxPoints: api.CURVE_MAX_POINTS })
+    : [...buffer, sample].slice(-1800);
 }
 
 function getStagedCurveCodes() {
@@ -893,7 +905,49 @@ function getStagedCurveCodes() {
 }
 
 function getAllCurveViewCodes() {
-  return [...new Set(state.curveViews.flatMap((view) => view.codes || []).filter(Boolean))];
+  return [
+    ...new Set(
+      state.curveViews
+        .flatMap((view) => (normalizeCurveView(view).charts || []).flatMap((chart) => chart.codes || []))
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function normalizeCurveView(view) {
+  if (!view) return view;
+  if (Array.isArray(view.charts)) {
+    return {
+      ...view,
+      layoutColumns: Math.min(10, Math.max(1, Number(view.layoutColumns) || 1)),
+      charts: view.charts.map((chart) => ({
+        id: chart.id,
+        name: chart.name,
+        codes: [...new Set((chart.codes || []).filter(Boolean))],
+      })),
+    };
+  }
+  const legacyCodes = [...new Set((view.codes || []).filter(Boolean))];
+  return {
+    id: view.id,
+    name: view.name,
+    layoutColumns: Math.min(10, Math.max(1, Number(view.layoutColumns) || 1)),
+    charts: legacyCodes.length ? [{ id: `${view.id}-chart-0`, name: "曲线页 1", codes: legacyCodes }] : [],
+  };
+}
+
+function getCurveViews() {
+  state.curveViews = state.curveViews.map(normalizeCurveView);
+  return state.curveViews;
+}
+
+function getActiveCurveView() {
+  const views = getCurveViews();
+  return views.find((view) => view.id === state.activeCurveViewId) || views[0] || null;
+}
+
+function getCurveViewLayoutColumns(view) {
+  return Math.min(10, Math.max(1, Number(view?.layoutColumns) || 1));
 }
 
 function clearCurveSelections() {
@@ -908,10 +962,34 @@ function removeStagedCurveCode(code) {
   state.pendingCurveCodes = state.pendingCurveCodes.filter((item) => item !== code);
 }
 
-function removeCurveCode(viewId, code) {
-  state.curveViews = state.curveViews
-    .map((view) => view.id === viewId ? { ...view, codes: (view.codes || []).filter((item) => item !== code) } : view)
-    .filter((view) => (view.codes || []).length || view.id === state.activeCurveViewId);
+function removeCurveCode(viewId, chartId, code) {
+  let removedChartId = "";
+  state.curveViews = getCurveViews()
+    .map((view) => {
+      if (view.id !== viewId) return view;
+      const charts = (view.charts || [])
+        .map((chart) => {
+          if (chart.id !== chartId) return chart;
+          const codes = (chart.codes || []).filter((item) => item !== code);
+          if (!codes.length) removedChartId = chart.id;
+          return { ...chart, codes };
+        })
+        .filter((chart) => (chart.codes || []).length > 0);
+      return { ...view, charts };
+    });
+  if (removedChartId) disposeCurveChart(removedChartId);
+}
+
+function removeCurveChart(viewId, chartId) {
+  disposeCurveChart(chartId);
+  state.curveViews = getCurveViews().map((view) =>
+    view.id === viewId ? { ...view, charts: (view.charts || []).filter((chart) => chart.id !== chartId) } : view,
+  );
+}
+
+function disposeCurveChartsForView(viewId) {
+  const view = getCurveViews().find((item) => item.id === viewId);
+  (view?.charts || []).forEach((chart) => disposeCurveChart(chart.id));
 }
 
 function getCurveSeries(codes = null) {
@@ -949,48 +1027,201 @@ function getCurveSeries(codes = null) {
   });
 }
 
-function getCurveViews() {
-  return state.curveViews;
-}
-
-function createCurveView(codes = []) {
-  const uniqueCodes = [...new Set((codes || []).filter(Boolean))];
+function createCurveTabPage() {
   const id = `curve-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
-  const view = { id, name: `曲线页面 ${state.curveViews.length + 1}`, codes: uniqueCodes };
-  state.curveViews = [...state.curveViews, view];
+  const view = { id, name: `Tab页面 ${getCurveViews().length + 1}`, charts: [], layoutColumns: 1 };
+  state.curveViews = [...getCurveViews(), view];
   state.activeCurveViewId = id;
   return view;
 }
 
-function addCurveView(codes) {
+/** 在当前 Tab 新建独立曲线画布（不合并到已有画布）；无 Tab 时自动建 Tab */
+function addCurveChartFromSelection(codes) {
   const uniqueCodes = [...new Set((codes || []).filter(Boolean))];
   if (!uniqueCodes.length) return null;
-  const activeView = state.curveViews.find((view) => view.id === state.activeCurveViewId);
-  if (activeView && !(activeView.codes || []).length) {
-    activeView.codes = uniqueCodes;
-    state.activeCurveViewId = activeView.id;
-    return activeView;
-  }
-  return createCurveView(uniqueCodes);
+  let tab = getActiveCurveView();
+  if (!tab) tab = createCurveTabPage();
+  const chart = {
+    id: `chart-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+    name: `曲线页 ${(tab.charts || []).length + 1}`,
+    codes: uniqueCodes,
+  };
+  tab = { ...tab, charts: [...(tab.charts || []), chart] };
+  state.curveViews = getCurveViews().map((view) => (view.id === tab.id ? tab : view));
+  state.activeCurveViewId = tab.id;
+  return { tab, chart };
 }
 
-function renderCurvePanel(view, index) {
-  const series = getCurveSeriesForCodes(view.codes);
+function renderCurveChartPanel(view, chart) {
   const viewId = escapeAttr(view.id);
+  const chartId = escapeAttr(chart.id);
+  const series = getCurveSeriesForCodes(chart.codes || []);
   return `
-    <article class="view-surface chart-wrap curve-panel ${view.id === state.activeCurveViewId ? "active" : ""}" data-curve-view="${viewId}">
-      <div class="chart-meta">
-        <input class="inline-name-input" data-rename-curve="${viewId}" value="${escapeAttr(view.name || `曲线页面 ${index + 1}`)}" aria-label="修改曲线页面名称" />
+    <article class="view-surface chart-wrap curve-chart-panel curve-chart-cell">
+      <div class="chart-meta curve-chart-caption">
+        <strong>${escapeAttr(chart.name || "曲线页")}</strong>
         <span>${series.length} 通道</span>
+        <div class="curve-chart-actions">
+          ${series
+            .map(
+              (item) =>
+                `<span class="curve-chip"><i style="background:${item.color}"></i>${escapeAttr(item.code)}<button type="button" data-curve-code-view="${viewId}" data-curve-chart-id="${chartId}" data-remove-curve-code="${escapeAttr(item.code)}" aria-label="移除 ${escapeAttr(item.code)}">×</button></span>`,
+            )
+            .join("")}
+          <button type="button" class="send-mini" data-curve-code-view="${viewId}" data-remove-curve-chart="${chartId}">删除画布</button>
+        </div>
       </div>
-      <canvas class="trend-canvas" data-curve-canvas="${viewId}" width="1200" height="420"></canvas>
-      <div class="curve-panel-actions">
-        ${series.map((item) => `<span class="curve-chip"><i style="background:${item.color}"></i>${escapeAttr(item.code)}<button type="button" data-curve-code-view="${viewId}" data-remove-curve-code="${escapeAttr(item.code)}" aria-label="移除 ${escapeAttr(item.code)}">×</button></span>`).join("")}
-        ${series.length ? "" : `<span class="curve-chip empty">空白页面</span>`}
-        <button class="send-mini" data-remove-curve-view="${viewId}">删除页面</button>
+      <div class="curve-chart-host" data-curve-chart="${chartId}" data-curve-view-id="${viewId}" role="img" aria-label="${escapeAttr(chart.name || "曲线页")}"></div>
+    </article>
+  `;
+}
+
+function renderActiveCurvePage(view) {
+  const viewId = escapeAttr(view.id);
+  const layoutColumns = getCurveViewLayoutColumns(view);
+  const charts = view.charts || [];
+  return `
+    <article class="view-surface curve-page-surface" data-active-curve-page="${viewId}">
+      <div class="curve-page-grid columns-${layoutColumns}">
+        ${
+          charts.length
+            ? charts.map((chart) => renderCurveChartPanel(view, chart)).join("")
+            : `<div class="empty-hint curve-page-empty">本 Tab 暂无曲线画布。勾选波道后点「新建曲线页」。</div>`
+        }
       </div>
     </article>
   `;
+}
+
+function getCurveChartApi() {
+  return window.UUSPACE_CURVE || null;
+}
+
+function getEchartsLib() {
+  return typeof window !== "undefined" ? window.echarts : null;
+}
+
+function disposeCurveChart(chartId) {
+  const entry = curveChartInstances.get(chartId);
+  if (!entry) return;
+  try {
+    entry.chart?.dispose();
+  } catch {
+    /* ignore */
+  }
+  curveChartInstances.delete(chartId);
+}
+
+function disposeAllCurveCharts() {
+  [...curveChartInstances.keys()].forEach(disposeCurveChart);
+  if (curveChartFlushTimer) {
+    clearTimeout(curveChartFlushTimer);
+    curveChartFlushTimer = null;
+  }
+}
+
+function buildCurveOptionForChart(chart) {
+  const api = getCurveChartApi();
+  const now = Date.now();
+  const codes = [...new Set((chart.codes || []).filter(Boolean))];
+  const rowsByCode = new Map(getAllTelemetryRows().map((row) => [row.code, row]));
+  const series = codes.map((code) => {
+    const row = rowsByCode.get(code) || { code, name: code };
+    return {
+      code,
+      name: row.name,
+      paramName: row.name,
+      color: colorForCode(code),
+      samples: state.curveBuffers[code] || [],
+    };
+  });
+  if (api?.buildCurveOption) {
+    return api.buildCurveOption({
+      viewName: chart.name,
+      now,
+      series,
+      emptyTitle: "等待遥测数据",
+      emptySubtitle: "UDP 数据到达后自动绘制。",
+    });
+  }
+  return { series: [] };
+}
+
+function mountCurveCharts() {
+  const echarts = getEchartsLib();
+  const api = getCurveChartApi();
+  if (!echarts || !api) return;
+  api.registerMissionCurveTheme?.(echarts, colorForCode);
+
+  const activeView = getActiveCurveView();
+  const liveChartIds = new Set();
+  if (activeView) {
+    (activeView.charts || []).forEach((chart) => {
+      liveChartIds.add(chart.id);
+      const host = document.querySelector(`[data-curve-chart="${chart.id}"]`);
+      if (!host) return;
+      let entry = curveChartInstances.get(chart.id);
+      if (!entry || entry.host !== host) {
+        if (entry) disposeCurveChart(chart.id);
+        const inst = echarts.init(host, "mission-curve", { renderer: "canvas" });
+        entry = { chart: inst, host, legendSelected: entry?.legendSelected || {} };
+        inst.on("legendselectchanged", (ev) => {
+          entry.legendSelected = { ...(ev.selected || {}) };
+        });
+        curveChartInstances.set(chart.id, entry);
+      }
+    });
+  }
+  [...curveChartInstances.keys()].forEach((chartId) => {
+    if (!liveChartIds.has(chartId)) disposeCurveChart(chartId);
+  });
+  flushCurveChartsNow();
+}
+
+function flushCurveChartsNow() {
+  if (state.activeView !== "curve") return;
+  const activeView = getActiveCurveView();
+  if (!activeView) return;
+  (activeView.charts || []).forEach((chart) => {
+    const entry = curveChartInstances.get(chart.id);
+    if (!entry?.chart) return;
+    const option = buildCurveOptionForChart(chart);
+    if (option.legend && entry.legendSelected) {
+      option.legend = { ...option.legend, selected: { ...entry.legendSelected } };
+    }
+    entry.chart.setOption(option, { notMerge: true });
+    entry.chart.resize();
+  });
+}
+
+function scheduleCurveChartFlush() {
+  if (state.activeView !== "curve") return;
+  const delay = getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 150;
+  if (curveChartFlushTimer) return;
+  curveChartFlushTimer = setTimeout(() => {
+    curveChartFlushTimer = null;
+    mountCurveCharts();
+    flushCurveChartsNow();
+  }, delay);
+}
+
+function startCurveChartLoop() {
+  stopCurveChartLoop();
+  const delay = getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 150;
+  curveChartFlushInterval = setInterval(() => {
+    if (state.activeView !== "curve") {
+      stopCurveChartLoop();
+      return;
+    }
+    flushCurveChartsNow();
+  }, delay);
+}
+
+function stopCurveChartLoop() {
+  if (curveChartFlushInterval) {
+    clearInterval(curveChartFlushInterval);
+    curveChartFlushInterval = null;
+  }
 }
 
 function getCurveSeriesForCodes(codes) {
@@ -1032,16 +1263,16 @@ function renderTelemetryTable() {
     if (state.dataFilter === "收藏") return state.favorites.has(param.code);
     return matchText;
   });
-  const rows = limitRows(filteredRows, state.tableSearch ? 320 : 160);
+  const rows = filteredRows;
   const sheetStat = getSheetStat(state.activeSheet);
   const selectedView = state.tableViews.find((view) => view.id === state.activeTableViewId);
   const selectedCodesCount = state.selectedWaveCodes.size;
 
   return `
-    <div class="view">
+    <div class="view table-view">
       <section class="view-surface table-surface">
         <div class="view-header">
-          <div class="view-title">遥测表格<small>端口 7101-7108 分别对应 Sheet0-Sheet7，表格选波道后可到遥测曲线页添加曲线</small></div>
+          <div class="view-title">遥测表格<small>端口 7101-7108 分别对应 Sheet0-Sheet7，勾选波道后到曲线页点「新建曲线页」</small></div>
           <div class="header-actions">
             <button class="ghost-button" data-add-table>添加表格</button>
             <button class="ghost-button" data-refresh-defs>刷新定义</button>
@@ -1088,7 +1319,7 @@ function renderTelemetryTable() {
             <div class="favorite-list">
               ${getSelectedWaveRows()
                 .map((param) => `<div class="favorite-item" data-param-card="${param.code}"><span>${param.code}</span><strong>${param.name}</strong></div>`)
-                .join("") || `<div class="empty-hint">勾选左侧表格里的波道后，可以添加表格，或切到遥测曲线页添加曲线。</div>`}
+                .join("") || `<div class="empty-hint">勾选左侧表格里的波道后，可以添加表格，或切到曲线页点「新建曲线页」。</div>`}
             </div>
           </aside>
           <section class="table-wrap">
@@ -1132,15 +1363,16 @@ function renderCurve() {
   const stagedChannels = getCurveSeriesForCodes(stagedCodes);
   const curveViews = getCurveViews();
   const plottedCodes = getAllCurveViewCodes();
-  const layoutColumns = curveViews.length <= 1 ? 1 : state.curveLayoutColumns;
-  const activeCurveView = curveViews.find((view) => view.id === state.activeCurveViewId) || curveViews[0] || null;
+  const activeCurveView = getActiveCurveView();
+  const layoutOptions = Array.from({ length: 10 }, (_, index) => index + 1);
+  const activeLayout = activeCurveView ? getCurveViewLayoutColumns(activeCurveView) : 1;
   return `
     <div class="view split-grid curve-view">
       <section class="view-surface channel-picker">
         <div class="view-header compact-head">
-          <div class="view-title">曲线通道<small>${activeCurveView ? `当前页面：${activeCurveView.name || "未命名页面"}` : "先选择波道，再添加曲线页面"}</small></div>
+          <div class="view-title">曲线通道<small>${activeCurveView ? `当前 Tab：${activeCurveView.name || "未命名"}` : "勾选波道后点「新建曲线页」绘制"}</small></div>
           <div class="header-actions">
-            <button class="primary-button" data-add-curve>添加曲线</button>
+            <button class="primary-button" data-add-curve title="根据所选波道在当前 Tab 绘制曲线">新建曲线页</button>
           </div>
         </div>
         <div class="selected-channel-list">
@@ -1186,19 +1418,48 @@ function renderCurve() {
 
       <section class="trend-stack">
         <div class="curve-workbar">
-          <div class="view-title">曲线页面<small>${curveViews.length} 个页面 · ${plottedCodes.length} 个通道</small></div>
-          <div class="header-actions">
-            <button class="ghost-button" data-create-curve-view>新建页面</button>
-            <button class="ghost-button" data-clear-curves>清空曲线</button>
-            <div class="segmented">
-              ${[1, 2, 3].map((count) => `<button class="segment ${state.curveLayoutColumns === count ? "active" : ""}" data-curve-layout="${count}">${count}列</button>`).join("")}
+          <div class="curve-page-toolbar">
+            <div class="view-title curve-page-toolbar-title">曲线 Tab<small>${curveViews.length} 个 Tab · ${plottedCodes.length} 个通道</small></div>
+            <div class="curve-page-tabs-scroll">
+              <div class="segmented curve-page-tabs" aria-label="曲线 Tab 切换">
+                ${curveViews
+                  .map(
+                    (view) =>
+                      `<button type="button" class="segment ${view.id === state.activeCurveViewId ? "active" : ""}" data-curve-view="${escapeAttr(view.id)}">${escapeAttr(view.name)}</button>`,
+                  )
+                  .join("")}
+              </div>
             </div>
+            ${
+              activeCurveView
+                ? `<input class="inline-name-input curve-page-rename" data-rename-curve="${escapeAttr(activeCurveView.id)}" value="${escapeAttr(activeCurveView.name)}" aria-label="修改 Tab 页面标题" />`
+                : ""
+            }
+          </div>
+          <div class="header-actions">
+            <button class="ghost-button" data-create-curve-view title="新建空白 Tab 页面，不添加波道">新建Tab页面</button>
+            <button class="ghost-button" data-clear-curves>清空曲线</button>
+            ${
+              activeCurveView
+                ? `<button type="button" class="send-mini" data-remove-curve-view="${escapeAttr(activeCurveView.id)}">删除本 Tab</button>`
+                : ""
+            }
+            <label class="curve-layout-select">
+              分列
+              <select data-curve-layout-select ${activeCurveView ? "" : "disabled"} aria-label="当前 Tab 分列数（最多 10 列）">
+                ${layoutOptions
+                  .map((count) => `<option value="${count}" ${activeLayout === count ? "selected" : ""}>${count} 列</option>`)
+                  .join("")}
+              </select>
+            </label>
           </div>
         </div>
-        <div class="curve-grid columns-${layoutColumns}">
-          ${curveViews.length
-            ? curveViews.map((view, index) => renderCurvePanel(view, index)).join("")
-            : `<article class="view-surface chart-wrap empty-curve-panel"><div class="empty-hint">还没有曲线页面。选择波道后点“添加曲线”，或先点“新建页面”建立空白页面。</div></article>`}
+        <div class="curve-page-stage">
+          ${
+            activeCurveView
+              ? renderActiveCurvePage(activeCurveView)
+              : `<article class="view-surface chart-wrap empty-curve-panel"><div class="empty-hint">还没有 Tab 页面。点「新建Tab页面」建空白页，或勾选波道后点「新建曲线页」。</div></article>`
+          }
         </div>
       </section>
     </div>
@@ -1221,10 +1482,10 @@ function renderCommandCenter() {
 
   const selected = commands.find((c) => c.id === state.selectedCommandId) || null;
   return `
-    <div class="view split-grid">
-      <section class="view-surface">
+    <div class="view split-grid command-split">
+      <section class="view-surface command-list-pane">
         <div class="view-header">
-          <div class="view-title">指令控制<small>卡片流 + 右侧详情，支持查看指令源码</small></div>
+          <div class="view-title">指令控制<small>列表选指令 · 右侧查看详情与源码</small></div>
           <div class="header-actions">
             <button class="ghost-button" data-import-commands>导入指令表</button>
             <button class="primary-button" data-send-selected>发送选中</button>
@@ -1236,25 +1497,21 @@ function renderCommandCenter() {
             ${categories.map((category) => `<button class="segment ${state.commandCategory === category ? "active" : ""}" data-command-category="${category}">${category}</button>`).join("")}
           </div>
         </div>
-        <div class="command-grid">
-          ${filtered
-            .map(
-              (command) => `
-                <article class="command-card ${command.id === state.selectedCommandId ? "selected" : ""}" data-command-card="${command.id}">
-                  <header>
-                    <h3>${command.id}</h3>
-                    <span class="tag accent">${command.category}</span>
-                  </header>
-                  <p>${command.name}</p>
-                  <footer>
-                    <span class="tag">UDP:${command.port}</span>
-                    <button class="send-mini ${state.pendingCommandId === command.id ? "pending" : ""}" data-send="${command.id}">${state.pendingCommandId === command.id ? "确认发送" : "发送"}</button>
-                  </footer>
-                  ${renderCommandResult(command.id)}
+        <div class="command-list" role="list">
+          ${filtered.length
+            ? filtered
+                .map(
+                  (command) => `
+                <article class="command-list-card ${command.id === state.selectedCommandId ? "selected" : ""}" data-command-card="${escapeAttr(command.id)}" role="listitem">
+                  <span class="command-list-code">${escapeAttr(command.id)}</span>
+                  <span class="command-list-name" title="${escapeAttr(command.name)}">${escapeAttr(command.name)}</span>
+                  <span class="command-list-category tag accent">${escapeAttr(command.category)}</span>
+                  <button type="button" class="send-mini ${state.pendingCommandId === command.id ? "pending" : ""}" data-send="${escapeAttr(command.id)}">${state.pendingCommandId === command.id ? "确认" : "发送"}</button>
                 </article>
               `,
-            )
-            .join("")}
+                )
+                .join("")
+            : `<div class="empty-hint command-list-empty">没有匹配的指令，请调整搜索或分类筛选。</div>`}
         </div>
       </section>
 
@@ -1262,16 +1519,17 @@ function renderCommandCenter() {
         <div class="view-header">
           <div class="view-title">指令详情<small>选中卡片可在此查看完整字段与源码</small></div>
         </div>
-        <div style="padding:12px;">
+        <div class="command-detail-body">
           ${selected ? `
             <div class="detail-actions"><button class="primary-button" data-send="${selected.id}">立即发送</button></div>
-            <h3>${selected.id} · ${selected.name}</h3>
+            ${renderCommandResult(selected.id)}
+            <h3 class="command-detail-heading"><span class="command-detail-code">${selected.id}</span><span class="command-detail-name">${selected.name}</span></h3>
             <div class="kv"><span>类别</span><strong>${selected.category}</strong></div>
             <div class="kv"><span>节点</span><strong>${selected.node} · ${selected.target}:${selected.port}</strong></div>
             <div class="kv"><span>类型</span><strong>${selected.type}</strong></div>
-            <div style="margin-top:12px;"><strong>说明</strong><div style="color:var(--muted);margin-top:6px">${selected.desc || "-"}</div></div>
-            <div style="margin-top:12px"><strong>指令包（HEX）</strong><pre style="background:rgba(0,0,0,0.2);padding:8px;border-radius:6px;color:#b9c6ff;overflow:auto">${selected.packet}</pre></div>
-          ` : `<div class="empty-hint">请选择一个指令卡片以查看源码。</div>`}
+            <div class="command-detail-block"><strong>说明</strong><p class="command-detail-desc">${selected.desc || "-"}</p></div>
+            <div class="command-detail-block"><strong>指令包（HEX）</strong><pre class="command-detail-hex">${selected.packet}</pre></div>
+          ` : `<div class="empty-hint">请从左侧列表选择一条指令，查看详情与源码。</div>`}
         </div>
       </section>
     </div>
@@ -1294,7 +1552,7 @@ function bindViewActions() {
     if (ev.target.closest && (ev.target.closest("[data-wave-select]") || ev.target.closest("[data-wave-cell]"))) {
       return; // let checkbox cell change handler manage selection, avoid re-render before change event
     }
-    const btn = ev.target.closest && ev.target.closest("[data-sheet],[data-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-view],[data-curve-layout],[data-fav],[data-toggle-wave-drawer],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
+    const btn = ev.target.closest && ev.target.closest("[data-sheet],[data-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-fav],[data-toggle-wave-drawer],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
     if (!btn) return;
     if (btn.dataset.viewShortcut) return switchView(btn.dataset.viewShortcut);
     if (btn.dataset.rule) {
@@ -1331,24 +1589,28 @@ function bindViewActions() {
     if (btn.dataset.addCurve !== undefined) {
       if (state.activeView !== "curve") {
         state.pendingCurveCodes = getSelectedWaveRows().map((row) => row.code);
-        if (!state.pendingCurveCodes.length) return appendStatusEvent("请先选择波道", "勾选表格左侧的波道后再到曲线页添加曲线");
+        if (!state.pendingCurveCodes.length) return appendStatusEvent("请先选择波道", "勾选表格左侧波道后再到曲线页点「新建曲线页」");
         state.selectedWaveCodes.clear();
         appendStatusEvent("波道已准备到曲线页", state.pendingCurveCodes.join(", "));
         return switchView("curve");
       }
       const codes = getStagedCurveCodes();
-      if (!codes.length) return appendStatusEvent("请先选择曲线通道", "在左侧通道列表勾选后再添加曲线");
-      const target = addCurveView(codes);
-      appendStatusEvent(target ? `已添加到 ${target.name}` : "已添加曲线页面", codes.join(", "));
+      if (!codes.length) return appendStatusEvent("请先选择波道", "在左侧勾选波道后再点「新建曲线页」");
+      const result = addCurveChartFromSelection(codes);
+      appendStatusEvent(
+        result ? `已新建曲线画布「${result.chart.name}」` : "未绘制曲线",
+        `${result?.tab?.name || ""} · ${codes.join(", ")}`,
+      );
       clearCurveSelections();
       return renderView();
     }
     if (btn.dataset.createCurveView !== undefined) {
-      const view = createCurveView([]);
-      appendStatusEvent("已新建曲线页面", view.name);
+      const view = createCurveTabPage();
+      appendStatusEvent("已新建 Tab 页面", view.name);
       return renderView();
     }
     if (btn.dataset.clearCurves !== undefined) {
+      disposeAllCurveCharts();
       state.curveViews = [];
       state.activeCurveViewId = "";
       clearCurveSelections();
@@ -1370,27 +1632,35 @@ function bindViewActions() {
     }
     if (btn.dataset.removeCurveCode) {
       const viewId = btn.dataset.curveCodeView;
+      const chartId = btn.dataset.curveChartId;
       const code = btn.dataset.removeCurveCode;
-      if (!viewId || !code) return;
+      if (!viewId || !chartId || !code) return;
       state.activeCurveViewId = viewId;
-      removeCurveCode(viewId, code);
+      removeCurveCode(viewId, chartId, code);
       appendStatusEvent("已移除曲线通道", code);
       return renderView();
     }
+    if (btn.dataset.removeCurveChart) {
+      const viewId = btn.dataset.curveCodeView;
+      const chartId = btn.dataset.removeCurveChart;
+      if (!viewId || !chartId) return;
+      state.activeCurveViewId = viewId;
+      removeCurveChart(viewId, chartId);
+      appendStatusEvent("已删除曲线画布");
+      return renderView();
+    }
     if (btn.dataset.removeCurveView) {
-      state.curveViews = state.curveViews.filter((view) => view.id !== btn.dataset.removeCurveView);
-      if (state.activeCurveViewId === btn.dataset.removeCurveView) {
+      const removedId = btn.dataset.removeCurveView;
+      disposeCurveChartsForView(removedId);
+      state.curveViews = getCurveViews().filter((view) => view.id !== removedId);
+      if (state.activeCurveViewId === removedId) {
         state.activeCurveViewId = state.curveViews[0] ? state.curveViews[0].id : "";
       }
-      appendStatusEvent("已删除曲线页面", btn.dataset.removeCurveView);
+      appendStatusEvent("已删除 Tab 页面");
       return renderView();
     }
     if (btn.dataset.curveView) {
       state.activeCurveViewId = btn.dataset.curveView;
-      return renderView();
-    }
-    if (btn.dataset.curveLayout) {
-      state.curveLayoutColumns = Number(btn.dataset.curveLayout) || 1;
       return renderView();
     }
     if (btn.dataset.renameTable !== undefined) return;
@@ -1525,6 +1795,13 @@ function bindViewActions() {
       const code = tgt.dataset.waveSelect;
       if (tgt.checked) state.selectedWaveCodes.add(code);
       else state.selectedWaveCodes.delete(code);
+      return updateWaveSelectionInPlace();
+    }
+    if (tgt.matches && tgt.matches("[data-curve-layout-select]")) {
+      const tab = getActiveCurveView();
+      if (!tab) return;
+      tab.layoutColumns = Math.min(10, Math.max(1, Number(tgt.value) || 1));
+      state.curveViews = getCurveViews().map((view) => (view.id === tab.id ? tab : view));
       return renderView();
     }
     if (tgt.matches && tgt.matches("[data-channel]")) {
@@ -1558,10 +1835,14 @@ function bindViewActions() {
       return;
     }
     if (tgt && tgt.dataset && tgt.dataset.renameCurve !== undefined) {
-      const view = state.curveViews.find((item) => item.id === tgt.dataset.renameCurve);
+      const view = getCurveViews().find((item) => item.id === tgt.dataset.renameCurve);
       if (view) {
-        view.name = tgt.value.trim() || `曲线页面 ${state.curveViews.indexOf(view) + 1}`;
-        scheduleRenameRender(`curve-${view.id}`, `[data-rename-curve="${view.id}"]`, tgt.value);
+        view.name = tgt.value.trim() || `Tab页面 ${getCurveViews().indexOf(view) + 1}`;
+        clearTimeout(state.renameDebounceTimers[`curve-${view.id}`]);
+        state.renameDebounceTimers[`curve-${view.id}`] = setTimeout(() => {
+          updateCurveViewTabsInPlace();
+        }, 300);
+        updateCurveViewTabsInPlace();
       }
       return;
     }
@@ -1971,6 +2252,44 @@ function updateTelemetryRowSelectionInPlace() {
   });
 }
 
+function updateWaveSelectionInPlace() {
+  const count = state.selectedWaveCodes.size;
+  document.querySelectorAll("[data-wave-select]").forEach((input) => {
+    const code = input.dataset.waveSelect;
+    if (!code) return;
+    input.checked = state.selectedWaveCodes.has(code);
+  });
+  const drawerBtn = document.querySelector("[data-toggle-wave-drawer]");
+  if (drawerBtn) {
+    drawerBtn.textContent = `${state.waveDrawerOpen ? "收起波道" : "已选波道"} ${count}`;
+  }
+  const list = document.querySelector(".wave-select-rail .favorite-list");
+  if (!list) return;
+  const rows = getSelectedWaveRows();
+  list.innerHTML = rows.length
+    ? rows
+        .map(
+          (param) =>
+            `<div class="favorite-item" data-param-card="${param.code}"><span>${param.code}</span><strong>${param.name}</strong></div>`,
+        )
+        .join("")
+    : `<div class="empty-hint">勾选左侧表格里的波道后，可以添加表格，或切到曲线页点「新建曲线页」。</div>`;
+}
+
+function updateCurveViewTabsInPlace() {
+  document.querySelectorAll("button[data-curve-view]").forEach((btn) => {
+    const view = getCurveViews().find((item) => item.id === btn.dataset.curveView);
+    if (!view) return;
+    btn.classList.toggle("active", state.activeCurveViewId === view.id);
+    btn.textContent = view.name;
+  });
+  const renameInput = document.querySelector("[data-rename-curve]");
+  const activeView = getActiveCurveView();
+  if (renameInput && activeView && renameInput.dataset.renameCurve === activeView.id) {
+    renameInput.value = activeView.name;
+  }
+}
+
 function formatRawHex(value) {
   if (value == null || value === "") return "—";
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -2111,6 +2430,7 @@ function updatePortStats(portStats, packet) {
 
 function refreshUdpViews() {
   if (state.activeView === "curve") {
+    scheduleCurveChartFlush();
     return;
   }
   if (!["connection", "status", "table"].includes(state.activeView)) {

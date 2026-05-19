@@ -1,0 +1,134 @@
+import { describe, expect, it } from "vitest";
+import {
+  CURVE_MAX_POINTS,
+  CURVE_WINDOW_MS,
+  appendCurveSample,
+  buildCurveOption,
+  computeCurveTimeAxis,
+  formatCurveAxisTooltip,
+  formatCurveSeriesLabel,
+  trimCurveBuffer,
+} from "../../modules/curve-chart/curve-chart.js";
+
+describe("curve-chart buffer", () => {
+  it("keeps at most CURVE_MAX_POINTS samples", () => {
+    const now = 1_700_000_000_000;
+    const buffer = Array.from({ length: CURVE_MAX_POINTS + 50 }, (_, i) => ({
+      time: now - (CURVE_MAX_POINTS + 50 - i) * 10,
+      value: i,
+    }));
+    const trimmed = trimCurveBuffer(buffer, { now });
+    expect(trimmed.length).toBe(CURVE_MAX_POINTS);
+    expect(trimmed[0].value).toBe(50);
+  });
+
+  it("appendCurveSample trims after push", () => {
+    const now = Date.now();
+    let buffer = [];
+    for (let i = 0; i < 5; i += 1) {
+      buffer = appendCurveSample(buffer, { time: now - (4 - i) * 1000, value: i }, { now });
+    }
+    expect(buffer).toHaveLength(5);
+    expect(buffer.at(-1).value).toBe(4);
+  });
+});
+
+describe("computeCurveTimeAxis", () => {
+  it("shrinks window when data span is shorter than 60s", () => {
+    const now = 1_700_000_060_000;
+    const { min, max } = computeCurveTimeAxis(
+      [{ samples: [{ time: now - 20_000, value: 1 }, { time: now - 5_000, value: 2 }] }],
+      now,
+      CURVE_WINDOW_MS,
+    );
+    expect(max).toBe(now);
+    expect(min).toBeGreaterThan(now - CURVE_WINDOW_MS);
+    expect(min).toBeLessThanOrEqual(now - 20_000);
+  });
+
+  it("uses full 60s window when data span is long enough", () => {
+    const now = 1_700_000_060_000;
+    const { min, max } = computeCurveTimeAxis(
+      [{ samples: [{ time: now - 58_000, value: 1 }, { time: now - 1_000, value: 2 }] }],
+      now,
+      CURVE_WINDOW_MS,
+    );
+    expect(max).toBe(now);
+    expect(min).toBe(now - CURVE_WINDOW_MS);
+  });
+});
+
+describe("formatCurveSeriesLabel", () => {
+  it("joins code and name with hyphen", () => {
+    expect(formatCurveSeriesLabel("T001", "温度")).toBe("T001-温度");
+  });
+
+  it("returns code only when name matches or is empty", () => {
+    expect(formatCurveSeriesLabel("T001", "T001")).toBe("T001");
+    expect(formatCurveSeriesLabel("T001", "")).toBe("T001");
+  });
+
+  it("does not duplicate code when name is already prefixed", () => {
+    expect(formatCurveSeriesLabel("T001", "T001-温度")).toBe("T001-温度");
+  });
+});
+
+describe("buildCurveOption", () => {
+  it("builds time-axis option with one series per channel", () => {
+    const now = 1_700_000_000_000;
+    const option = buildCurveOption({
+      viewName: "测试页",
+      now,
+      series: [
+        {
+          code: "CH-A",
+          name: "通道A",
+          color: "#5B7CFA",
+          samples: [
+            { time: now - 58_000, value: 1 },
+            { time: now - 10_000, value: 2 },
+          ],
+        },
+        {
+          code: "CH-B",
+          color: "#3DD9B4",
+          samples: [{ time: now - 5_000, value: 3 }],
+        },
+      ],
+    });
+    expect(option.xAxis.max).toBe(now);
+    expect(option.xAxis.min).toBe(now - CURVE_WINDOW_MS);
+    expect(option.series).toHaveLength(2);
+    expect(option.series[0].name).toBe("CH-A-通道A");
+    expect(option.series[1].name).toBe("CH-B");
+    expect(option.series[1].data[0]).toEqual([now - 5_000, 3]);
+    expect(option.backgroundColor).toBe("transparent");
+    expect(option.tooltip.formatter).toBe(formatCurveAxisTooltip);
+  });
+
+  it("shows empty-state copy for blank page", () => {
+    const option = buildCurveOption({
+      series: [],
+      emptyTitle: "空白页面",
+      emptySubtitle: "在左侧勾选波道后点击「添加曲线」。",
+    });
+    expect(option.graphic).toHaveLength(2);
+    expect(option.graphic[0].style.text).toBe("空白页面");
+    expect(option.graphic[1].style.text).toBe("在左侧勾选波道后点击「添加曲线」。");
+  });
+});
+
+describe("formatCurveAxisTooltip", () => {
+  it("keeps one value per series when params repeat", () => {
+    const html = formatCurveAxisTooltip([
+      { seriesId: "CH-A", seriesName: "CH-A", marker: "●", value: [1, 10], axisValueLabel: "12:00" },
+      { seriesId: "CH-A", seriesName: "CH-A", marker: "●", value: [2, 11], axisValueLabel: "12:00" },
+      { seriesId: "CH-B", seriesName: "CH-B", marker: "●", value: [3, 20], axisValueLabel: "12:00" },
+    ]);
+    expect(html).toContain("12:00");
+    expect(html.match(/CH-A/g)).toHaveLength(1);
+    expect(html.match(/CH-B/g)).toHaveLength(1);
+    expect(html).toContain("CH-A: 10");
+    expect(html).toContain("CH-B: 20");
+  });
+});

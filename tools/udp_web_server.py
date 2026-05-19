@@ -30,6 +30,24 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(_TOOLS_DIR)
 
 
+def format_telemetry_display_value(value: float, sig_figs: int = 5) -> str:
+    """Display string with sig_figs from first non-zero digit (Web MC default)."""
+    if not math.isfinite(value):
+        return "—"
+    if value == 0:
+        return "0"
+    abs_v = abs(value)
+    if abs_v >= 1e8:
+        return f"{value:.3e}"
+    order = math.floor(math.log10(abs_v))
+    dec = max(0, sig_figs - 1 - int(order))
+    rounded = float(f"{value:.12g}")
+    text = f"{rounded:.{dec}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
 def resolve_project_root(root: str | None = None) -> str:
     candidate = os.path.abspath(root or PROJECT_ROOT)
     if os.path.isdir(os.path.join(candidate, "Meter")) or os.path.isdir(os.path.join(candidate, "Commad")):
@@ -141,6 +159,7 @@ def list_meter_workbooks(root: str) -> List[Dict]:
     meter_dir = os.path.join(root, "Meter")
     if not os.path.isdir(meter_dir):
         return []
+    preferred_name = "卫星1遥测大表.xlsx"
     workbooks = []
     for filename in sorted(os.listdir(meter_dir)):
         if not re.search(r"\.xlsx?$", filename, re.IGNORECASE):
@@ -152,6 +171,7 @@ def list_meter_workbooks(root: str) -> List[Dict]:
                 "path": f"/api/meter/{filename}",
             }
         )
+    workbooks.sort(key=lambda item: (0 if item["filename"] == preferred_name else 1, item["filename"]))
     return workbooks
 
 
@@ -247,6 +267,45 @@ def wave_to_index(wave_no: str):
     if not match:
         return None
     return int(match.group(1)), int(match.group(2) or 0)
+
+
+def wave_token_abs_bit(token: str) -> int:
+    """路序绝对位号（MSB=7，与桌面 BitConverterHelper 一致）。"""
+    match = re.search(r"W(\d+)(?:B(\d+))?", (token or "").strip())
+    if not match:
+        raise ValueError(f"invalid wave token: {token!r}")
+    byte_i = int(match.group(1))
+    bit_i = int(match.group(2) or 0)
+    return byte_i * 8 + (7 - bit_i)
+
+
+def wave_range_abs_bits(wave_no: str, bit_width: int) -> tuple[int, int]:
+    """解析 W4B5-W5B0 等跨字节路序，返回闭区间 [start_abs, end_abs]。"""
+    parts = (wave_no or "").split("-", 1)
+    start_abs = wave_token_abs_bit(parts[0])
+    if len(parts) > 1 and parts[1].strip():
+        end_abs = wave_token_abs_bit(parts[1])
+    else:
+        end_abs = start_abs + max(bit_width, 1) - 1
+    if end_abs < start_abs:
+        start_abs, end_abs = end_abs, start_abs
+    return start_abs, end_abs
+
+
+def extract_bits_msb(payload: bytes, start_abs: int, end_abs: int) -> int:
+    count = end_abs - start_abs + 1
+    if count <= 0 or count > 64:
+        raise ValueError("invalid bit span")
+    result = 0
+    for i in range(count):
+        bit_pos = start_abs + i
+        byte_idx = bit_pos // 8
+        bit_in_byte = 7 - (bit_pos % 8)
+        if byte_idx < 0 or byte_idx >= len(payload):
+            raise IndexError("telemetry bit range out of packet")
+        if (payload[byte_idx] >> bit_in_byte) & 1:
+            result |= 1 << (count - 1 - i)
+    return result
 
 
 def get_bit(value: int, index: int) -> bool:
@@ -350,13 +409,15 @@ class TelemetryItem:
         if byte_width <= 0:
             byte_width = 1
 
-        raw_unsigned = read_uint(payload, self.data_index, byte_width)
         if self.bit_width % 8 != 0:
-            if byte_width == 1:
-                bit_value = get_save_bit_value(raw_unsigned, self.bit_index, self.bit_width)
+            if "-" in (self.wave_no or "") or byte_width > 1:
+                start_abs, end_abs = wave_range_abs_bits(self.wave_no, self.bit_width)
+                bit_value = extract_bits_msb(payload, start_abs, end_abs)
             else:
-                bit_value = get_save_bit_value(raw_unsigned, (byte_width * 8 - 1) - self.bit_index, self.bit_width)
+                raw_unsigned = read_uint(payload, self.data_index, 1)
+                bit_value = get_save_bit_value(raw_unsigned, 7 - self.bit_index, self.bit_width)
         else:
+            raw_unsigned = read_uint(payload, self.data_index, byte_width)
             bit_value = raw_unsigned
 
         original = self.original_value(payload, bit_value)
@@ -369,8 +430,8 @@ class TelemetryItem:
             "name": self.name,
             "waveNo": self.wave_no,
             "raw": bit_value,
-            "value": round(value, self.decimals),
-            "valueText": f"{value:.{self.decimals}f}",
+            "value": value,
+            "valueText": format_telemetry_display_value(value),
             "unit": self.unit,
             "formula": self.formula,
             "dataType": self.data_type_text,

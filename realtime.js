@@ -232,9 +232,46 @@
     return cfg.websocketPath || "";
   }
 
-  async function loadMeterByFilename(filename) {
+  const DEFAULT_METER_FILENAME = "卫星1遥测大表.xlsx";
+  let pendingSatelliteFilename = DEFAULT_METER_FILENAME;
+
+  function pickDefaultMeterFilename(list) {
+    if (!list.length) return "";
+    const preferred = list.find((item) => item.filename === DEFAULT_METER_FILENAME);
+    return preferred ? preferred.filename : list[0].filename;
+  }
+
+  function meterBasename(filename) {
+    return String(filename || "").split(/[/\\]/).pop() || "";
+  }
+
+  /** 同步顶栏卫星下拉与 missionSatTitle；选项未就绪时记入 pending，待列表加载后重试。 */
+  function syncSatelliteSelect(filename) {
+    const base = meterBasename(filename);
+    if (!base) return false;
+    pendingSatelliteFilename = base;
     const a = api();
-    const url = `/api/meter/${encodeURIComponent(filename)}`;
+    if (a) {
+      a.state.missionSatTitle = base.replace(/\.xlsx?$/i, "") || "卫星";
+      a.renderView();
+    }
+    const sel = $("#satelliteSelect");
+    if (!sel || !sel.options.length) return false;
+    const hasOption = [...sel.options].some((opt) => opt.value === base);
+    if (hasOption) {
+      sel.value = base;
+      sel.removeAttribute("aria-busy");
+      return true;
+    }
+    return false;
+  }
+
+  async function loadMeterByFilename(filename) {
+    const base = meterBasename(filename);
+    if (!base) return;
+    syncSatelliteSelect(base);
+    const a = api();
+    const url = `/api/meter/${encodeURIComponent(base)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
@@ -243,7 +280,6 @@
     rebuildTelemetryGroups();
     rebuildSummaryFromParams();
     a.renderDock();
-    a.state.missionSatTitle = filename.replace(/\.xlsx?$/i, "") || "卫星";
     a.renderView();
   }
 
@@ -276,6 +312,7 @@
   }
 
   window.UUSPACE_LOAD_COMMANDS = loadCommandsMerged;
+  window.UUSPACE_SYNC_SATELLITE_SELECT = syncSatelliteSelect;
 
   function setWsUi(connected, detail) {
     const line = $("#wsStatusLine");
@@ -323,11 +360,19 @@
     return ws;
   }
 
-  async function boot() {
-    if (!api()) {
-      console.warn("[realtime] UUSPACE_API 未就绪");
-      return;
+  async function waitForApi(maxMs = 5000) {
+    if (api()) return true;
+    const started = Date.now();
+    while (Date.now() - started < maxMs) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (api()) return true;
     }
+    console.warn("[realtime] UUSPACE_API 未就绪");
+    return false;
+  }
+
+  async function boot() {
+    if (!(await waitForApi())) return;
     let wsPath = "";
     try {
       const res = await fetch("/api/protocol");
@@ -347,32 +392,45 @@
         sel.innerHTML = "";
         if (!list.length) {
           sel.appendChild(new Option("无 Meter xlsx", ""));
+          sel.removeAttribute("aria-busy");
         } else {
-          sel.appendChild(new Option("选择卫星遥测表…", ""));
           for (const s of list) {
             const opt = new Option(s.filename, s.filename);
             sel.appendChild(opt);
           }
-        }
-        sel.addEventListener("change", async () => {
-          const fn = sel.value;
-          if (!fn) return;
-          try {
-            await loadMeterByFilename(fn);
-            api().appendStatusEvent(`已切换遥测表 ${fn}`, fmtTime(new Date()));
-          } catch (e) {
-            console.error(e);
-            api().appendStatusEvent(`加载遥测表失败: ${fn}`, String(e.message || e));
+          if (!sel.dataset.changeBound) {
+            sel.dataset.changeBound = "1";
+            sel.addEventListener("change", async () => {
+              const fn = sel.value;
+              if (!fn) return;
+              try {
+                await loadMeterByFilename(fn);
+                api().appendStatusEvent(`已切换遥测表 ${fn}`, fmtTime(new Date()));
+              } catch (e) {
+                console.error(e);
+                api().appendStatusEvent(`加载遥测表失败: ${fn}`, String(e.message || e));
+              }
+            });
           }
-        });
-        if (list.length === 1) {
-          sel.value = list[0].filename;
-          await loadMeterByFilename(list[0].filename).catch(() => {});
+          const targetFilename =
+            (pendingSatelliteFilename &&
+              list.some((s) => s.filename === pendingSatelliteFilename) &&
+              pendingSatelliteFilename) ||
+            pickDefaultMeterFilename(list);
+          if (targetFilename) {
+            sel.value = targetFilename;
+            sel.selectedIndex = [...sel.options].findIndex((opt) => opt.value === targetFilename);
+            syncSatelliteSelect(targetFilename);
+            await loadMeterByFilename(targetFilename).catch(() => {});
+          }
         }
       }
     } catch (e) {
       console.error("[realtime] /api/satellites", e);
-      if (sel) sel.innerHTML = `<option value="">卫星列表加载失败</option>`;
+      if (sel) {
+        sel.innerHTML = `<option value="">卫星列表加载失败</option>`;
+        sel.removeAttribute("aria-busy");
+      }
       api().appendStatusEvent(
         "卫星遥测表加载失败",
         "请从仓库根目录启动 Python：python tools\\udp_web_server.py --root <项目根>",

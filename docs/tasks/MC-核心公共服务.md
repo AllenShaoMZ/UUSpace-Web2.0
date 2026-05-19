@@ -23,15 +23,15 @@
 
 ### 持久化（`PersistenceService`）
 
-- [ ] 统一键前缀 `uuspace.web2.v1.*`
-- [ ] 实现 `load(namespace)` / `save(namespace, data)`，JSON 解析失败时回退默认
-- [ ] 启动时合并到 `state`（或 store）：`telemetry.columns`、`telemetry.decimals`、`curve.views` 等占位结构
-- [ ] 提供防抖写入（列宽拖动等高频场景）
+- [x] 统一键前缀 `uuspace.web2.v1.*`
+- [x] 实现 `load(namespace)` / `save(namespace, data)`，JSON 解析失败时回退默认
+- [x] 启动时合并到 `state`（或 store）：`telemetry.columns`、`telemetry.decimals`、`curve.views` 等占位结构
+- [x] 提供防抖写入（列宽拖动等高频场景）
 
 ### 验收
 
-- [ ] 刷新页面后，已保存的列配置仍能加载（可与 M1 联调一项键即可）
-- [ ] 输入 `1e9`、`-1e-5` 在表格中显示为科学计数形式
+- [x] 刷新页面后，已保存的列配置仍能加载（可与 M1 联调一项键即可）
+- [x] 输入 `1e9`、`-1e-5` 在表格中显示为科学计数形式
 
 ## 参考
 

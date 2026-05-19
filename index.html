@@ -19,9 +19,7 @@
         <nav class="task-nav" aria-label="工作区切换"></nav>
         <div class="satellite-picker" title="卫星类型 / 遥测大表（Meter 目录 xlsx）">
           <label for="satelliteSelect">卫星</label>
-          <select id="satelliteSelect" class="satellite-select">
-            <option value="">加载中…</option>
-          </select>
+          <select id="satelliteSelect" class="satellite-select" aria-busy="true"></select>
         </div>
         <div class="runtime-strip">
           <span id="wsStatusLine"><i class="dot warn"></i><span id="wsStatusText">WS 未连接</span></span>
@@ -63,8 +61,59 @@
 
     <script type="module">
       import { formatTelemetryNumber } from "./modules/core/format-telemetry-number.js";
+      import { createPersistenceService } from "./modules/core/persistence-service.js";
+      import {
+        TELEMETRY_COLUMNS,
+        TELEMETRY_MIN_COLUMN_WIDTH,
+        createDefaultTelemetryColumns,
+        mergeTelemetryColumns,
+        getVisibleTelemetryColumns,
+        isTelemetryColumnVisible,
+        resolveTelemetryColumnWidth,
+        clampTelemetryColumnWidth,
+        getTelemetryColumnMinWidth,
+        computeTelemetryColumnAutoWidth,
+        TELEMETRY_COLUMN_CELL_PADDING_X,
+        TELEMETRY_COLUMN_RESIZE_HANDLE_WIDTH,
+      } from "./modules/telemetry/telemetry-columns.js";
+      import {
+        CURVE_FLUSH_INTERVAL_MS,
+        CURVE_MAX_POINTS,
+        CURVE_WINDOW_MS,
+        appendCurveSample,
+        buildCurveOption,
+        formatCurveSeriesLabel,
+        registerMissionCurveTheme,
+        trimCurveBuffer,
+      } from "./modules/curve-chart/curve-chart.js";
       window.formatTelemetryNumber = formatTelemetryNumber;
+      window.UUSPACE_PERSIST = createPersistenceService();
+      window.UUSPACE_CURVE = {
+        CURVE_FLUSH_INTERVAL_MS,
+        CURVE_MAX_POINTS,
+        CURVE_WINDOW_MS,
+        appendCurveSample,
+        buildCurveOption,
+        formatCurveSeriesLabel,
+        registerMissionCurveTheme,
+        trimCurveBuffer,
+      };
+      window.UUSPACE_TELEMETRY_COLUMNS = {
+        TELEMETRY_COLUMNS,
+        TELEMETRY_MIN_COLUMN_WIDTH,
+        createDefaultTelemetryColumns,
+        mergeTelemetryColumns,
+        getVisibleTelemetryColumns,
+        isTelemetryColumnVisible,
+        resolveTelemetryColumnWidth,
+        clampTelemetryColumnWidth,
+        getTelemetryColumnMinWidth,
+        computeTelemetryColumnAutoWidth,
+        TELEMETRY_COLUMN_CELL_PADDING_X,
+        TELEMETRY_COLUMN_RESIZE_HANDLE_WIDTH,
+      };
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
     <script src="./app.js"></script>
     <script src="./realtime.js"></script>
   </body>

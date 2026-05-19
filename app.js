@@ -272,10 +272,7 @@ let curveChartFlushTimer = null;
 let curveChartFlushInterval = null;
 
 const APP_VERSION =
-  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.3";
-
-/** @type {Map<string, number>} 每通道单调递增时间戳，避免同包时间相同导致 ECharts 合并丢点 */
-const curveSampleTimeByCode = new Map();
+  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.5";
 
 function getUserSettingsApi() {
   return window.UUSPACE_USER_SETTINGS || null;
@@ -1238,23 +1235,27 @@ function colorForCode(code) {
   return palette[hash % palette.length];
 }
 
-function nextCurveSampleTime(code, packetTimeMs) {
-  const base = Number(packetTimeMs) || Date.now();
-  const prev = curveSampleTimeByCode.get(code);
-  const next = prev == null ? base : Math.max(base, prev + 1);
-  curveSampleTimeByCode.set(code, next);
-  return next;
+function parsePacketTimeMs(packetTime) {
+  const t = Date.parse(String(packetTime ?? ""));
+  return Number.isFinite(t) ? t : Date.now();
 }
 
-function pushCurvePoint(code, value, time) {
+function isCurvePlottedCode(code) {
+  if (!code) return false;
+  return getAllCurveViewCodes().includes(code);
+}
+
+function pushCurvePoint(code, value, packetTimeMs) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return;
+  if (!isCurvePlottedCode(code)) return;
   const api = getCurveChartApi();
-  const sample = { time: nextCurveSampleTime(code, time), value: numeric };
+  const sample = { time: parsePacketTimeMs(packetTimeMs), value: numeric };
   const buffer = state.curveBuffers[code] || [];
-  state.curveBuffers[code] = api?.appendCurveSample
-    ? api.appendCurveSample(buffer, sample, { now: Date.now(), maxPoints: api.CURVE_MAX_POINTS })
-    : [...buffer, sample].slice(-1800);
+  const opts = { now: Date.now(), maxPoints: api?.CURVE_MAX_POINTS ?? 1800 };
+  state.curveBuffers[code] = api?.appendCurveSampleCoalesced
+    ? api.appendCurveSampleCoalesced(buffer, sample, opts)
+    : [...buffer, sample].slice(-opts.maxPoints);
   if (state.activeView === "curve") scheduleCurveChartFlush();
 }
 
@@ -1276,8 +1277,9 @@ function seedCurveBuffersForCodes(codes) {
       val = parseNumber(row?.value);
     }
     if (Number.isFinite(val)) {
-      pushCurvePoint(code, val, Date.now());
-      pushCurvePoint(code, val, Date.now());
+      const t = Date.now();
+      pushCurvePoint(code, val, t - 10);
+      pushCurvePoint(code, val, t);
     }
   });
 }
@@ -1646,7 +1648,7 @@ function buildCurveOptionForChart(chart, axisZoomOverride) {
       series,
       axisZoom,
       emptyTitle: "等待遥测数据",
-      emptySubtitle: "UDP 数据到达后自动绘制。",
+      emptySubtitle: "UDP 到达后以折线绘制；请选数值会变化的波道（开关量、模式字等）观察阶跃。",
     });
   }
   return { series: [] };
@@ -2384,7 +2386,6 @@ function bindViewActions() {
       state.activeCurveViewId = "";
       clearCurveSelections();
       state.curveBuffers = {};
-      curveSampleTimeByCode.clear();
       schedulePersistWorkspace();
       appendStatusEvent("曲线通道已清空");
       return renderView();
@@ -3431,9 +3432,10 @@ function syncPacketValues(packet) {
   if (!packet.parsed || !packet.parsed.values) return;
   const sheetKey = String(packet.sheetIndex);
   const nextValues = {};
+  const packetMs = parsePacketTimeMs(packet.time);
   packet.parsed.values.forEach((item) => {
     nextValues[item.code] = { ...item, updatedAt: packet.time };
-    pushCurvePoint(item.code, Number(item.value), Date.now());
+    pushCurvePoint(item.code, Number(item.value), packetMs);
   });
   store.set("sheetLiveValues", { ...state.sheetLiveValues, [sheetKey]: nextValues });
 }

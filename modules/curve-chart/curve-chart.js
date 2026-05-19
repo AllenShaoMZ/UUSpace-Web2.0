@@ -36,6 +36,27 @@ export function appendCurveSample(buffer, sample, options = {}) {
 }
 
 /**
+ * 追加采样点；与桌面 SciChart 一致：同一协议时间戳只保留最后一个 Y。
+ * 若时间回退则 +1ms 保证单调，避免 ECharts 时间轴乱序。
+ * @param {CurveSample[]} buffer
+ * @param {CurveSample} sample
+ * @param {{ now?: number, maxPoints?: number, maxAgeMs?: number }} [options]
+ */
+export function appendCurveSampleCoalesced(buffer, sample, options = {}) {
+  const buf = buffer || [];
+  const time = Number(sample?.time);
+  const value = Number(sample?.value);
+  if (!Number.isFinite(time) || !Number.isFinite(value)) return trimCurveBuffer(buf, options);
+  const last = buf.length ? buf[buf.length - 1] : null;
+  if (last && last.time === time) {
+    if (last.value === value) return trimCurveBuffer(buf, { ...options, now: Date.now() });
+    return appendCurveSample(buf, { time: last.time + 1, value }, { ...options, now: Date.now() });
+  }
+  const nextTime = last && time < last.time ? last.time + 1 : time;
+  return appendCurveSample(buf, { time: nextTime, value }, { ...options, now: Date.now() });
+}
+
+/**
  * Axis tooltip: one row per series (dedupe stale merged series).
  * @param {unknown} params ECharts tooltip params (array for axis trigger)
  * @returns {string}
@@ -53,6 +74,80 @@ export function resolveCurveAxisNow(series, fallbackNow = Date.now()) {
     .filter((t) => Number.isFinite(t));
   if (!times.length) return fallbackNow;
   return Math.max(fallbackNow, ...times);
+}
+
+/**
+ * 取当前 X 可视窗内的采样值；窗内无点则回退全缓冲。
+ * @param {Array<{ samples?: CurveSample[] }>} series
+ * @param {number} xMin
+ * @param {number} xMax
+ */
+export function collectVisibleCurveValues(series, xMin, xMax) {
+  const xmin = Number(xMin);
+  const xmax = Number(xMax);
+  const useWindow = Number.isFinite(xmin) && Number.isFinite(xmax);
+  const inWindow = [];
+  const all = [];
+  for (const item of series || []) {
+    for (const s of item.samples || []) {
+      if (!Number.isFinite(s?.value) || !Number.isFinite(s?.time)) continue;
+      all.push(s.value);
+      if (!useWindow || (s.time >= xmin && s.time <= xmax)) inWindow.push(s.value);
+    }
+  }
+  return inWindow.length ? inWindow : all;
+}
+
+/**
+ * Y 轴范围：仅按可见窗内 min/max + 8% 跨度 padding（对齐旧 Web/桌面，不用 |yMax| 百分比）。
+ * @param {Array<{ samples?: CurveSample[] }>} series
+ * @param {number} xMin
+ * @param {number} xMax
+ * @param {{ padRatio?: number }} [options]
+ */
+export function computeCurveYAxisRange(series, xMin, xMax, options = {}) {
+  const padRatio = options.padRatio ?? 0.08;
+  const values = collectVisibleCurveValues(series, xMin, xMax);
+  if (!values.length) return { min: 0, max: 1 };
+  const yMin = Math.min(...values);
+  const yMax = Math.max(...values);
+  const span = yMax - yMin;
+  if (span < 1e-12) {
+    const c = yMin;
+    const eps = Math.max(Math.abs(c) * 1e-4, 1e-6);
+    return { min: c - eps, max: c + eps };
+  }
+  const pad = span * padRatio;
+  return { min: yMin - pad, max: yMax + pad };
+}
+
+/**
+ * 按当前 X 轴可见时间窗内的采样计算 Y 轴范围（8% 跨度 padding，避免 |yMax|*2% 压扁小幅波动）。
+ * @param {Array<{ samples?: CurveSample[] }>} series
+ * @param {number} xMin
+ * @param {number} xMax
+ */
+export function computeCurveYAxis(series, xMin, xMax) {
+  const inWindow = (s) => Number.isFinite(s?.time) && s.time >= xMin && s.time <= xMax;
+  let values = (series || [])
+    .flatMap((item) => (item.samples || []).filter(inWindow).map((s) => s.value))
+    .filter(Number.isFinite);
+  if (!values.length) {
+    values = (series || [])
+      .flatMap((item) => (item.samples || []).map((s) => s.value))
+      .filter(Number.isFinite);
+  }
+  if (!values.length) return { min: 0, max: 1 };
+
+  const yMin = Math.min(...values);
+  const yMax = Math.max(...values);
+  const span = yMax - yMin;
+  const center = (yMin + yMax) / 2;
+  const pad =
+    span > 1e-12
+      ? span * 0.08
+      : Math.max(Math.abs(center) * 1e-4, 1e-6);
+  return { min: yMin - pad, max: yMax + pad };
 }
 
 export function computeCurveTimeAxis(series, now, windowMs = CURVE_WINDOW_MS) {
@@ -110,16 +205,13 @@ export function buildCurveOption(params) {
   const now = resolveCurveAxisNow(series, Number(params.now) || Date.now());
   const windowMs = params.windowMs ?? CURVE_WINDOW_MS;
   const backgroundColor = params.backgroundColor ?? CURVE_BG;
-  const values = series.flatMap((item) => (item.samples || []).map((s) => s.value)).filter(Number.isFinite);
-  const yMin = values.length ? Math.min(...values) : 0;
-  const yMax = values.length ? Math.max(...values) : 1;
-  const yPad = Math.max((yMax - yMin) * 0.08, Math.abs(yMax) * 0.02, 0.5);
   const timeAxis = computeCurveTimeAxis(series, now, windowMs);
   const axisZoom = params.axisZoom;
   const xMin = Number.isFinite(axisZoom?.xMin) ? axisZoom.xMin : timeAxis.min;
   const xMax = Number.isFinite(axisZoom?.xMax) ? axisZoom.xMax : timeAxis.max;
-  const yAxisMin = Number.isFinite(axisZoom?.yMin) ? axisZoom.yMin : yMin - yPad;
-  const yAxisMax = Number.isFinite(axisZoom?.yMax) ? axisZoom.yMax : yMax + yPad;
+  const yAxisRange = computeCurveYAxis(series, xMin, xMax);
+  const yAxisMin = Number.isFinite(axisZoom?.yMin) ? axisZoom.yMin : yAxisRange.min;
+  const yAxisMax = Number.isFinite(axisZoom?.yMax) ? axisZoom.yMax : yAxisRange.max;
 
   return {
     backgroundColor,
@@ -187,17 +279,13 @@ export function buildCurveOption(params) {
       id: item.code,
       name: formatCurveSeriesLabel(item.code, item.name || item.paramName),
       type: "line",
-      showSymbol: pointCount > 0 && pointCount <= 4,
-      symbolSize: 5,
+      showSymbol: false,
       smooth: false,
+      step: false,
       sampling: "none",
-      lineStyle: { color: item.color, width: 1 },
+      connectNulls: false,
+      lineStyle: { color: item.color, width: 1.5, type: "solid" },
       itemStyle: { color: item.color },
-      areaStyle: {
-        origin: "auto",
-        opacity: 0.22,
-        color: hexToRgba(item.color, 0.22),
-      },
       data: (item.samples || []).map((sample) => [sample.time, sample.value]),
     };
     }),
@@ -249,7 +337,7 @@ export function registerMissionCurveTheme(echarts, colorForCode) {
     backgroundColor: "transparent",
     textStyle: { color: "#76839b" },
     title: { textStyle: { color: "#76839b" } },
-    line: { smooth: false },
+    line: { smooth: false, step: false },
     timeAxis: {
       axisLine: { lineStyle: { color: "rgba(37,46,66,.72)" } },
       splitLine: { lineStyle: { color: "rgba(37,46,66,.72)" } },
@@ -263,13 +351,4 @@ export function registerMissionCurveTheme(echarts, colorForCode) {
   });
   echarts.__uuspaceMissionCurveTheme = true;
   echarts.__uuspaceColorForCode = colorForCode;
-}
-
-function hexToRgba(hex, alpha) {
-  const raw = String(hex || "").replace("#", "");
-  if (raw.length !== 6) return `rgba(91,124,250,${alpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
 }

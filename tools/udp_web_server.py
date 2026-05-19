@@ -69,7 +69,7 @@ def default_meter_file(root: str) -> str:
 
 
 def utc_now() -> str:
-    return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return dt.datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
 
 
 def ascii_preview(data: bytes) -> str:
@@ -80,7 +80,7 @@ def iso_from_unix_seconds(value: float) -> str:
     if value is None or math.isnan(value) or math.isinf(value) or value <= 0:
         return utc_now()
     try:
-        return dt.datetime.utcfromtimestamp(value).replace(microsecond=0).isoformat() + "Z"
+        return dt.datetime.utcfromtimestamp(value).isoformat(timespec="milliseconds") + "Z"
     except (OverflowError, OSError, ValueError):
         return utc_now()
 

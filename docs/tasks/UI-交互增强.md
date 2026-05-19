@@ -17,6 +17,7 @@
 | **UI-07** | 主 Agent | 曲线锯齿波（对齐桌面 SciChart） | `modules/curve-chart/curve-chart.js` | ✅ 已完成 | `smooth:false`、单调时间戳、`appendData` 逐点 |
 | **UI-08** | 主 Agent | 侧栏折叠后可恢复；版本号单一来源 | `index.html`、`app-version.js` | ✅ 已完成 | 左侧 ▶ 手柄；`v2.0.3` |
 | **UI-09** | 主 Agent | 曲线空白修复 + 表格跨 Sheet 搜索勾选 | `app.js`、`curve-chart.js` | ✅ 已完成 | 种子点/时间轴；`tableSearchPickPanel` |
+| **M2-P0** | 主 Agent | 曲线形态贴近桌面（协议时间 + 纯折线） | `app.js`、`curve-chart.js` | ✅ 已完成 | `syncPacketValues` 用 `packet.time`；去 `areaStyle`；同刻合并 |
 
 > 主 Agent 统筹：两项同批合并落地，避免 `app.js` / `styles.css` 冲突；后续 **UI-01**（曲线 7200s/24h）、**UI-02**（表格全局搜索面板）待排期。
 
@@ -29,7 +30,7 @@
 - [x] **UI-03** 曲线 Tab 行：同上
 - [x] **UI-05** 曲线 Tab 切换 / 分列下拉不再整页 `renderView`（减轻卡顿）
 - [x] **UI-06** 左侧遥测摘要/告警侧栏可隐藏；曲线左侧通道栏可隐藏
-- [x] **UI-07** 曲线 `step:'end'` 阶梯线，接近桌面锯齿波
+- [x] **UI-07** 曲线折线（`smooth:false`）；**M2-P0** 协议时间轴 + 无面积填充，贴近桌面 SciChart
 
 ### 待办
 

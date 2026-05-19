@@ -3,8 +3,10 @@ import {
   CURVE_MAX_POINTS,
   CURVE_WINDOW_MS,
   appendCurveSample,
+  appendCurveSampleCoalesced,
   buildCurveOption,
   computeCurveTimeAxis,
+  computeCurveYAxis,
   resolveCurveAxisNow,
   formatCurveAxisTooltip,
   formatCurveSeriesLabel,
@@ -31,6 +33,35 @@ describe("curve-chart buffer", () => {
     }
     expect(buffer).toHaveLength(5);
     expect(buffer.at(-1).value).toBe(4);
+  });
+
+  it("appendCurveSampleCoalesced skips duplicate value at same protocol time", () => {
+    const now = Date.now();
+    const t = now - 2000;
+    let buffer = appendCurveSampleCoalesced([], { time: t, value: 1 }, { now });
+    buffer = appendCurveSampleCoalesced(buffer, { time: t, value: 1 }, { now });
+    expect(buffer).toHaveLength(1);
+    expect(buffer[0]).toEqual({ time: t, value: 1 });
+  });
+
+  it("appendCurveSampleCoalesced adds step point when value changes at same protocol time", () => {
+    const now = Date.now();
+    const t = now - 2000;
+    let buffer = appendCurveSampleCoalesced([], { time: t, value: 1 }, { now });
+    buffer = appendCurveSampleCoalesced(buffer, { time: t, value: 9 }, { now });
+    expect(buffer).toHaveLength(2);
+    expect(buffer[0]).toEqual({ time: t, value: 1 });
+    expect(buffer[1]).toEqual({ time: t + 1, value: 9 });
+  });
+
+  it("appendCurveSampleCoalesced bumps time when protocol time goes backward", () => {
+    const now = Date.now();
+    const t = now - 2000;
+    let buffer = appendCurveSampleCoalesced([], { time: t, value: 1 }, { now });
+    buffer = appendCurveSampleCoalesced(buffer, { time: t - 100, value: 2 }, { now });
+    expect(buffer).toHaveLength(2);
+    expect(buffer[1].time).toBe(t + 1);
+    expect(buffer[1].value).toBe(2);
   });
 });
 
@@ -64,6 +95,51 @@ describe("computeCurveTimeAxis", () => {
     );
     expect(max).toBe(now);
     expect(min).toBe(now - CURVE_WINDOW_MS);
+  });
+});
+
+describe("computeCurveYAxis", () => {
+  it("uses data span padding for large-magnitude signals with small ripple", () => {
+    const now = Date.now();
+    const xMin = now - 60_000;
+    const xMax = now;
+    const { min, max } = computeCurveYAxis(
+      [
+        {
+          samples: [
+            { time: now - 30_000, value: 1000 },
+            { time: now - 10_000, value: 1000.05 },
+            { time: now - 1_000, value: 1000.1 },
+          ],
+        },
+      ],
+      xMin,
+      xMax,
+    );
+    expect(max - min).toBeLessThan(1);
+    expect(min).toBeGreaterThan(999.9);
+    expect(max).toBeLessThan(1000.2);
+  });
+
+  it("ignores samples outside visible X window when computing range", () => {
+    const now = Date.now();
+    const xMin = now - 10_000;
+    const xMax = now;
+    const { min, max } = computeCurveYAxis(
+      [
+        {
+          samples: [
+            { time: now - 50_000, value: 0 },
+            { time: now - 5_000, value: 10 },
+            { time: now - 1_000, value: 12 },
+          ],
+        },
+      ],
+      xMin,
+      xMax,
+    );
+    expect(min).toBeGreaterThan(9);
+    expect(max).toBeLessThan(13);
   });
 });
 
@@ -113,6 +189,11 @@ describe("buildCurveOption", () => {
     expect(option.series[1].data[0]).toEqual([now - 5_000, 3]);
     expect(option.backgroundColor).toBe("transparent");
     expect(option.tooltip.formatter).toBe(formatCurveAxisTooltip);
+    expect(option.series[0].areaStyle).toBeUndefined();
+    expect(option.series[0].smooth).toBe(false);
+    expect(option.series[0].step).toBe(false);
+    expect(option.series[0].showSymbol).toBe(false);
+    expect(option.series[0].sampling).toBe("none");
   });
 
   it("shows empty-state copy for blank page", () => {

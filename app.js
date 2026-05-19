@@ -46,6 +46,7 @@ const state = {
   channels: new Set(),
   curveViews: [],
   activeCurveViewId: "",
+  curveWindowMs: 7_200_000,
   curveAnimationFrame: null,
   isComposing: false,
   pendingCommandId: "",
@@ -272,7 +273,7 @@ let curveChartFlushTimer = null;
 let curveChartFlushInterval = null;
 
 const APP_VERSION =
-  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.5";
+  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.6";
 
 function getUserSettingsApi() {
   return window.UUSPACE_USER_SETTINGS || null;
@@ -314,6 +315,10 @@ function hydrateWorkspaceFromStorage() {
   const activeView = getActiveTableView();
   if (activeView) state.activeSheet = Number(activeView.sheet);
   if (!Number.isFinite(state.dockHighlightSheet)) state.dockHighlightSheet = 0;
+  const curveApi = getCurveChartApi();
+  if (curveApi?.normalizeCurveWindowMs) {
+    state.curveWindowMs = curveApi.normalizeCurveWindowMs(state.curveWindowMs);
+  }
 }
 
 const BUILTIN_TABLE_ID_PREFIX = "sheet-";
@@ -1252,7 +1257,7 @@ function pushCurvePoint(code, value, packetTimeMs) {
   const api = getCurveChartApi();
   const sample = { time: parsePacketTimeMs(packetTimeMs), value: numeric };
   const buffer = state.curveBuffers[code] || [];
-  const opts = { now: Date.now(), maxPoints: api?.CURVE_MAX_POINTS ?? 1800 };
+  const opts = getCurveBufferOptions();
   state.curveBuffers[code] = api?.appendCurveSampleCoalesced
     ? api.appendCurveSampleCoalesced(buffer, sample, opts)
     : [...buffer, sample].slice(-opts.maxPoints);
@@ -1597,6 +1602,35 @@ function getCurveChartApi() {
   return window.UUSPACE_CURVE || null;
 }
 
+function getCurveWindowMs() {
+  const api = getCurveChartApi();
+  const raw = Number(state.curveWindowMs);
+  return api?.normalizeCurveWindowMs ? api.normalizeCurveWindowMs(raw) : raw || 7_200_000;
+}
+
+function getCurveBufferOptions() {
+  const api = getCurveChartApi();
+  const windowMs = getCurveWindowMs();
+  return {
+    now: Date.now(),
+    maxPoints: api?.resolveCurveMaxPoints ? api.resolveCurveMaxPoints(windowMs) : 72_000,
+    maxAgeMs: api?.CURVE_MAX_AGE_MS ?? 24 * 60 * 60 * 1000,
+  };
+}
+
+function applyCurveWindowMs(ms) {
+  const api = getCurveChartApi();
+  state.curveWindowMs = api?.normalizeCurveWindowMs ? api.normalizeCurveWindowMs(ms) : ms;
+  const opts = getCurveBufferOptions();
+  Object.keys(state.curveBuffers).forEach((code) => {
+    const buf = state.curveBuffers[code];
+    if (!buf?.length || !api?.trimCurveBuffer) return;
+    state.curveBuffers[code] = api.trimCurveBuffer(buf, opts);
+  });
+  schedulePersistWorkspace();
+  flushCurveChartsNow();
+}
+
 function getEchartsLib() {
   return typeof window !== "undefined" ? window.echarts : null;
 }
@@ -1645,6 +1679,7 @@ function buildCurveOptionForChart(chart, axisZoomOverride) {
     return api.buildCurveOption({
       viewName: chart.name,
       now,
+      windowMs: getCurveWindowMs(),
       series,
       axisZoom,
       emptyTitle: "等待遥测数据",
@@ -2043,6 +2078,9 @@ function renderCurve() {
   const activeCurveView = getActiveCurveView();
   const layoutOptions = Array.from({ length: 10 }, (_, index) => index + 1);
   const activeLayout = activeCurveView ? getCurveViewLayoutColumns(activeCurveView) : 1;
+  const curveApi = getCurveChartApi();
+  const curveWindowMs = getCurveWindowMs();
+  const windowOptions = curveApi?.CURVE_WINDOW_OPTIONS || [{ seconds: 7200, label: "2 小时" }];
   return `
     <div class="view split-grid curve-view ${state.curveChannelPanelCollapsed ? "curve-channel-collapsed" : ""}">
       <section class="view-surface channel-picker">
@@ -2128,6 +2166,17 @@ function renderCurve() {
               <select data-curve-layout-select ${activeCurveView ? "" : "disabled"} aria-label="当前 Tab 分列数（最多 10 列）">
                 ${layoutOptions
                   .map((count) => `<option value="${count}" ${activeLayout === count ? "selected" : ""}>${count} 列</option>`)
+                  .join("")}
+              </select>
+            </label>
+            <label class="curve-layout-select">
+              显示时长
+              <select data-curve-window-select aria-label="曲线 X 轴显示时长">
+                ${windowOptions
+                  .map((opt) => {
+                    const ms = opt.seconds * 1000;
+                    return `<option value="${ms}" ${curveWindowMs === ms ? "selected" : ""}>${escapeAttr(opt.label)}</option>`;
+                  })
                   .join("")}
               </select>
             </label>
@@ -2654,6 +2703,10 @@ function bindViewActions() {
     }
     if (tgt.matches && tgt.matches("[data-curve-layout-select]")) {
       applyCurveLayoutColumns(Number(tgt.value));
+      return;
+    }
+    if (tgt.matches && tgt.matches("[data-curve-window-select]")) {
+      applyCurveWindowMs(Number(tgt.value));
       return;
     }
     if (tgt.matches && tgt.matches("[data-channel]")) {

@@ -27,6 +27,7 @@ describe("user-settings", () => {
       activeSheet: 2,
       curveViews: [{ id: "c1", name: "Tab1", charts: [], layoutColumns: 2 }],
       activeCurveViewId: "c1",
+      curveWindowMs: 7_200_000,
       telemetry: { columns: { visible: ["code"] }, decimals: { A: 2 } },
       favorites: new Set(["A", "B"]),
       waveDrawerOpen: true,
@@ -39,11 +40,13 @@ describe("user-settings", () => {
     expect(loaded.tableSearchHistory).toEqual(["温度", "电压"]);
     expect(loaded.activeSheet).toBe(2);
     expect(loaded.curveViews[0].layoutColumns).toBe(2);
-    const next = { tableViews: [], activeTableViewId: "", tableSearch: "", tableSearchHistory: [], activeSheet: 0, curveViews: [], activeCurveViewId: "", telemetry: { columns: {}, decimals: {} }, favorites: new Set(), waveDrawerOpen: false };
+    expect(loaded.curveWindowMs).toBe(7_200_000);
+    const next = { tableViews: [], activeTableViewId: "", tableSearch: "", tableSearchHistory: [], activeSheet: 0, curveViews: [], activeCurveViewId: "", curveWindowMs: 60_000, telemetry: { columns: {}, decimals: {} }, favorites: new Set(), waveDrawerOpen: false };
     applyWorkspaceSettings(next, loaded);
     expect(next.tableSearch).toBe("温度");
     expect(next.tableSearchHistory).toEqual(["温度", "电压"]);
     expect(next.favorites.has("A")).toBe(true);
     expect(next.waveDrawerOpen).toBe(true);
+    expect(next.curveWindowMs).toBe(7_200_000);
   });
 });

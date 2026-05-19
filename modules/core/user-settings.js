@@ -1,4 +1,4 @@
-/** @typedef {{ tableViews: object[], activeTableViewId: string, tableSearch: string, tableSearchHistory: string[], activeSheet: number, curveViews: object[], activeCurveViewId: string, telemetry: { columns: object, decimals: object }, favorites: string[], waveDrawerOpen: boolean }} WorkspaceSnapshot */
+/** @typedef {{ tableViews: object[], activeTableViewId: string, tableSearch: string, tableSearchHistory: string[], activeSheet: number, curveViews: object[], activeCurveViewId: string, curveWindowMs: number, telemetry: { columns: object, decimals: object }, favorites: string[], waveDrawerOpen: boolean }} WorkspaceSnapshot */
 
 /**
  * @param {{ load: (ns: string, fb?: unknown) => unknown }} persist
@@ -19,6 +19,7 @@ export function loadWorkspaceSettings(persist) {
     activeSheet: Number(persist.load("telemetry.activeSheet", 0)) || 0,
     curveViews: Array.isArray(curveViews) ? curveViews : [],
     activeCurveViewId: String(persist.load("curve.activeViewId", "") || ""),
+    curveWindowMs: Number(persist.load("curve.windowMs", 0)) || 0,
     telemetry: {
       columns: persist.load("telemetry.columns", {}) || {},
       decimals: persist.load("telemetry.decimals", {}) || {},
@@ -41,6 +42,7 @@ export function saveWorkspaceSettings(snapshot, persist) {
   persist.save("telemetry.activeSheet", snapshot.activeSheet ?? 0);
   persist.save("curve.views", snapshot.curveViews || []);
   persist.save("curve.activeViewId", snapshot.activeCurveViewId || "");
+  persist.save("curve.windowMs", snapshot.curveWindowMs ?? 0);
   persist.save("telemetry.columns", snapshot.telemetry?.columns || {});
   persist.save("telemetry.decimals", snapshot.telemetry?.decimals || {});
   persist.save("command.favorites", snapshot.favorites || []);
@@ -60,6 +62,7 @@ export function snapshotWorkspaceFromState(state) {
     activeSheet: state.activeSheet ?? 0,
     curveViews: state.curveViews || [],
     activeCurveViewId: state.activeCurveViewId || "",
+    curveWindowMs: state.curveWindowMs ?? 0,
     telemetry: {
       columns: state.telemetry?.columns || {},
       decimals: state.telemetry?.decimals || {},
@@ -87,6 +90,7 @@ export function applyWorkspaceSettings(state, saved) {
   if (Number.isFinite(saved.activeSheet)) state.activeSheet = saved.activeSheet;
   if (Array.isArray(saved.curveViews)) state.curveViews = saved.curveViews;
   if (typeof saved.activeCurveViewId === "string") state.activeCurveViewId = saved.activeCurveViewId;
+  if (Number.isFinite(saved.curveWindowMs) && saved.curveWindowMs > 0) state.curveWindowMs = saved.curveWindowMs;
   if (saved.telemetry && typeof saved.telemetry === "object") {
     state.telemetry = {
       columns: saved.telemetry.columns || {},

@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   CURVE_MAX_POINTS,
+  CURVE_MAX_AGE_MS,
   CURVE_WINDOW_MS,
   appendCurveSample,
   appendCurveSampleCoalesced,
   buildCurveOption,
   computeCurveTimeAxis,
   computeCurveYAxis,
+  decimateCurveBuffer,
+  normalizeCurveWindowMs,
   resolveCurveAxisNow,
+  resolveCurveMaxPoints,
   formatCurveAxisTooltip,
   formatCurveSeriesLabel,
   trimCurveBuffer,
@@ -22,7 +26,8 @@ describe("curve-chart buffer", () => {
     }));
     const trimmed = trimCurveBuffer(buffer, { now });
     expect(trimmed.length).toBe(CURVE_MAX_POINTS);
-    expect(trimmed[0].value).toBe(50);
+    expect(trimmed[0].value).toBe(0);
+    expect(trimmed.at(-1).value).toBe(CURVE_MAX_POINTS + 49);
   });
 
   it("appendCurveSample trims after push", () => {
@@ -74,7 +79,7 @@ describe("resolveCurveAxisNow", () => {
 });
 
 describe("computeCurveTimeAxis", () => {
-  it("shrinks window when data span is shorter than 60s", () => {
+  it("shrinks window when data span is shorter than configured window", () => {
     const now = 1_700_000_060_000;
     const { min, max } = computeCurveTimeAxis(
       [{ samples: [{ time: now - 20_000, value: 1 }, { time: now - 5_000, value: 2 }] }],
@@ -86,15 +91,40 @@ describe("computeCurveTimeAxis", () => {
     expect(min).toBeLessThanOrEqual(now - 20_000);
   });
 
-  it("uses full 60s window when data span is long enough", () => {
+  it("uses full 2h window when data span is long enough", () => {
     const now = 1_700_000_060_000;
     const { min, max } = computeCurveTimeAxis(
-      [{ samples: [{ time: now - 58_000, value: 1 }, { time: now - 1_000, value: 2 }] }],
+      [{ samples: [{ time: now - 7_000_000, value: 1 }, { time: now - 1_000, value: 2 }] }],
       now,
       CURVE_WINDOW_MS,
     );
     expect(max).toBe(now);
     expect(min).toBe(now - CURVE_WINDOW_MS);
+  });
+});
+
+describe("curve window config", () => {
+  it("defaults window to 7200s", () => {
+    expect(CURVE_WINDOW_MS).toBe(7_200_000);
+    expect(normalizeCurveWindowMs(0)).toBe(7_200_000);
+    expect(normalizeCurveWindowMs(60_000)).toBe(60_000);
+  });
+
+  it("caps window at buffer max age", () => {
+    expect(normalizeCurveWindowMs(CURVE_MAX_AGE_MS + 1)).toBe(CURVE_MAX_AGE_MS);
+  });
+
+  it("resolveCurveMaxPoints scales with window", () => {
+    expect(resolveCurveMaxPoints(60_000)).toBe(1800);
+    expect(resolveCurveMaxPoints(7_200_000)).toBe(72_000);
+  });
+
+  it("decimateCurveBuffer keeps endpoints", () => {
+    const buffer = Array.from({ length: 100 }, (_, i) => ({ time: i, value: i }));
+    const out = decimateCurveBuffer(buffer, 10);
+    expect(out).toHaveLength(10);
+    expect(out[0]).toEqual({ time: 0, value: 0 });
+    expect(out.at(-1)).toEqual({ time: 99, value: 99 });
   });
 });
 
@@ -164,6 +194,7 @@ describe("buildCurveOption", () => {
     const option = buildCurveOption({
       viewName: "测试页",
       now,
+      windowMs: 60_000,
       series: [
         {
           code: "CH-A",
@@ -182,7 +213,7 @@ describe("buildCurveOption", () => {
       ],
     });
     expect(option.xAxis.max).toBe(now);
-    expect(option.xAxis.min).toBe(now - CURVE_WINDOW_MS);
+    expect(option.xAxis.min).toBe(now - 60_000);
     expect(option.series).toHaveLength(2);
     expect(option.series[0].name).toBe("CH-A-通道A");
     expect(option.series[1].name).toBe("CH-B");

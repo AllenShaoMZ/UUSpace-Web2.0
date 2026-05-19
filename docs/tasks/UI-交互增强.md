@@ -18,8 +18,9 @@
 | **UI-08** | 主 Agent | 侧栏折叠后可恢复；版本号单一来源 | `index.html`、`app-version.js` | ✅ 已完成 | 左侧 ▶ 手柄；`v2.0.3` |
 | **UI-09** | 主 Agent | 曲线空白修复 + 表格跨 Sheet 搜索勾选 | `app.js`、`curve-chart.js` | ✅ 已完成 | 种子点/时间轴；`tableSearchPickPanel` |
 | **M2-P0** | 主 Agent | 曲线形态贴近桌面（协议时间 + 纯折线） | `app.js`、`curve-chart.js` | ✅ 已完成 | `syncPacketValues` 用 `packet.time`；去 `areaStyle`；同刻合并 |
+| **UI-01** | 主 Agent | 曲线默认 7200s + 可配置显示时长 | `curve-chart.js`、`app.js`、`user-settings.js` | ✅ 已完成 | 默认 2h；1分/10分/1h/2h/24h；缓冲 24h、72000 点抽稀 |
 
-> 主 Agent 统筹：两项同批合并落地，避免 `app.js` / `styles.css` 冲突；后续 **UI-01**（曲线 7200s/24h）、**UI-02**（表格全局搜索面板）待排期。
+> 主 Agent 统筹：两项同批合并落地，避免 `app.js` / `styles.css` 冲突。
 
 ## Vibe Coding 任务清单
 
@@ -34,7 +35,7 @@
 
 ### 待办
 
-- [ ] **UI-01** 曲线默认视窗 7200s、缓冲最大 24h（含抽稀策略）
+- [x] **UI-01** 曲线默认视窗 7200s、缓冲最大 24h（含抽稀策略）；工具栏「显示时长」可配置
 - [x] **UI-02** 表格全局搜索：搜索框下方结果列表 + 跨 Sheet 勾选（方案 A）
 
 ## 验收

@@ -1,8 +1,62 @@
 /** @typedef {{ time: number, value: number }} CurveSample */
 
-export const CURVE_MAX_POINTS = 1800;
-export const CURVE_WINDOW_MS = 60_000;
-export const CURVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** 单通道缓冲上限（约 2h @100ms/点，对齐桌面 FifoCapacity） */
+export const CURVE_MAX_POINTS = 72_000;
+/** 默认 X 轴可见时间窗：7200s（2h），对齐桌面 WaveSetConfigure */
+export const CURVE_WINDOW_MS = 7_200_000;
+/** 缓冲保留时长上限：24h */
+export const CURVE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** 可选显示时长（秒） */
+export const CURVE_WINDOW_OPTIONS = [
+  { seconds: 60, label: "1 分钟" },
+  { seconds: 600, label: "10 分钟" },
+  { seconds: 3600, label: "1 小时" },
+  { seconds: 7200, label: "2 小时" },
+  { seconds: 86_400, label: "24 小时" },
+];
+
+/**
+ * @param {number} ms
+ */
+export function normalizeCurveWindowMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 1000) return CURVE_WINDOW_MS;
+  return Math.min(Math.max(n, 1000), CURVE_MAX_AGE_MS);
+}
+
+/**
+ * @param {number} windowMs
+ */
+export function resolveCurveMaxPoints(windowMs) {
+  const wm = normalizeCurveWindowMs(windowMs);
+  const estimated = Math.ceil(wm / 100);
+  return Math.min(CURVE_MAX_POINTS, Math.max(1800, estimated));
+}
+
+/**
+ * 时间均匀抽稀，保留首尾点，避免超长窗撑爆渲染。
+ * @param {CurveSample[]} buffer
+ * @param {number} maxPoints
+ */
+export function decimateCurveBuffer(buffer, maxPoints) {
+  const sorted = (buffer || [])
+    .filter((p) => p && Number.isFinite(p.time) && Number.isFinite(p.value))
+    .sort((a, b) => a.time - b.time);
+  if (sorted.length <= maxPoints) return sorted;
+  if (maxPoints < 2) return sorted.slice(-1);
+
+  const result = [sorted[0]];
+  const inner = sorted.slice(1, -1);
+  const innerCount = maxPoints - 2;
+  const step = inner.length / innerCount;
+  for (let i = 0; i < innerCount; i += 1) {
+    const idx = Math.min(inner.length - 1, Math.floor((i + 0.5) * step));
+    result.push(inner[idx]);
+  }
+  result.push(sorted[sorted.length - 1]);
+  return result;
+}
 /** 实时刷新间隔（约 20Hz），与 UDP 入站合并后仍尽量逐点可见 */
 export const CURVE_FLUSH_INTERVAL_MS = 50;
 /** 与页面 panel 融合，不用独立纯黑底 */
@@ -20,7 +74,7 @@ export function trimCurveBuffer(buffer, options = {}) {
   const maxAgeMs = options.maxAgeMs ?? CURVE_MAX_AGE_MS;
   const minTime = now - maxAgeMs;
   let next = (buffer || []).filter((point) => point && Number.isFinite(point.time) && point.time >= minTime);
-  if (next.length > maxPoints) next = next.slice(-maxPoints);
+  if (next.length > maxPoints) next = decimateCurveBuffer(next, maxPoints);
   return next;
 }
 

@@ -94,13 +94,18 @@
       } from "./modules/telemetry/telemetry-columns.js";
       import {
         CURVE_FLUSH_INTERVAL_MS,
+        CURVE_MAX_AGE_MS,
         CURVE_MAX_POINTS,
         CURVE_WINDOW_MS,
+        CURVE_WINDOW_OPTIONS,
         appendCurveSample,
         appendCurveSampleCoalesced,
         buildCurveOption,
+        decimateCurveBuffer,
         formatCurveSeriesLabel,
+        normalizeCurveWindowMs,
         registerMissionCurveTheme,
+        resolveCurveMaxPoints,
         trimCurveBuffer,
       } from "./modules/curve-chart/curve-chart.js";
       window.formatTelemetryNumber = formatTelemetryNumber;
@@ -122,13 +127,18 @@
       };
       window.UUSPACE_CURVE = {
         CURVE_FLUSH_INTERVAL_MS,
+        CURVE_MAX_AGE_MS,
         CURVE_MAX_POINTS,
         CURVE_WINDOW_MS,
+        CURVE_WINDOW_OPTIONS,
         appendCurveSample,
         appendCurveSampleCoalesced,
         buildCurveOption,
+        decimateCurveBuffer,
         formatCurveSeriesLabel,
+        normalizeCurveWindowMs,
         registerMissionCurveTheme,
+        resolveCurveMaxPoints,
         trimCurveBuffer,
       };
       window.UUSPACE_TELEMETRY_COLUMNS = {
@@ -147,7 +157,7 @@
       };
     </script>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
-    <script src="./app.js?v=2.0.5" defer></script>
+    <script src="./app.js?v=2.0.6" defer></script>
     <script src="./realtime.js" defer></script>
   </body>
 </html>

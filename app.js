@@ -273,7 +273,7 @@ let curveChartFlushTimer = null;
 let curveChartFlushInterval = null;
 
 const APP_VERSION =
-  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.6";
+  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.7";
 
 function getUserSettingsApi() {
   return window.UUSPACE_USER_SETTINGS || null;
@@ -1250,13 +1250,21 @@ function isCurvePlottedCode(code) {
   return getAllCurveViewCodes().includes(code);
 }
 
+function setCurveSeedBuffer(code, val, timeMs) {
+  const t = parsePacketTimeMs(timeMs);
+  state.curveBuffers[code] = [
+    { time: t - 1000, value: val, seed: true },
+    { time: t, value: val, seed: true },
+  ];
+}
+
 function pushCurvePoint(code, value, packetTimeMs) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return;
   if (!isCurvePlottedCode(code)) return;
   const api = getCurveChartApi();
   const sample = { time: parsePacketTimeMs(packetTimeMs), value: numeric };
-  const buffer = state.curveBuffers[code] || [];
+  const buffer = (state.curveBuffers[code] || []).filter((p) => !p?.seed);
   const opts = getCurveBufferOptions();
   state.curveBuffers[code] = api?.appendCurveSampleCoalesced
     ? api.appendCurveSampleCoalesced(buffer, sample, opts)
@@ -1282,9 +1290,15 @@ function seedCurveBuffersForCodes(codes) {
       val = parseNumber(row?.value);
     }
     if (Number.isFinite(val)) {
-      const t = Date.now();
-      pushCurvePoint(code, val, t - 10);
-      pushCurvePoint(code, val, t);
+      let seedTime = Date.now();
+      for (const sheet of Object.values(state.sheetLiveValues || {})) {
+        const live = sheet[code];
+        if (live?.updatedAt) {
+          seedTime = parsePacketTimeMs(live.updatedAt);
+          break;
+        }
+      }
+      setCurveSeedBuffer(code, val, seedTime);
     }
   });
 }

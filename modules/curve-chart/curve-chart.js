@@ -1,4 +1,15 @@
-/** @typedef {{ time: number, value: number }} CurveSample */
+/** @typedef {{ time: number, value: number, seed?: boolean }} CurveSample */
+
+/**
+ * 绘图用数据：去掉占位种子点，按时间升序，避免与实时点乱序连线出现竖线。
+ * @param {CurveSample[]} samples
+ */
+export function prepareCurveSeriesData(samples) {
+  return (samples || [])
+    .filter((s) => s && !s.seed && Number.isFinite(s.time) && Number.isFinite(s.value))
+    .sort((a, b) => a.time - b.time)
+    .map((s) => [s.time, s.value]);
+}
 
 /** 单通道缓冲上限（约 2h @100ms/点，对齐桌面 FifoCapacity） */
 export const CURVE_MAX_POINTS = 72_000;
@@ -255,7 +266,10 @@ export function formatCurveAxisTooltip(params) {
  * @param {{ viewName?: string, emptyTitle?: string, emptySubtitle?: string, series: Array<{ code: string, name?: string, paramName?: string, color: string, samples: CurveSample[] }>, now?: number, windowMs?: number, backgroundColor?: string, axisZoom?: { xMin?: number, xMax?: number, yMin?: number, yMax?: number } }} params
  */
 export function buildCurveOption(params) {
-  const series = params.series || [];
+  const series = (params.series || []).map((item) => ({
+    ...item,
+    samples: (item.samples || []).filter((s) => !s?.seed),
+  }));
   const now = resolveCurveAxisNow(series, Number(params.now) || Date.now());
   const windowMs = params.windowMs ?? CURVE_WINDOW_MS;
   const backgroundColor = params.backgroundColor ?? CURVE_BG;
@@ -340,7 +354,7 @@ export function buildCurveOption(params) {
       connectNulls: false,
       lineStyle: { color: item.color, width: 1.5, type: "solid" },
       itemStyle: { color: item.color },
-      data: (item.samples || []).map((sample) => [sample.time, sample.value]),
+      data: prepareCurveSeriesData(item.samples),
     };
     }),
     graphic: series.length

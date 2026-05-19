@@ -14,6 +14,7 @@ import {
   resolveCurveMaxPoints,
   formatCurveAxisTooltip,
   formatCurveSeriesLabel,
+  prepareCurveSeriesData,
   trimCurveBuffer,
 } from "../../modules/curve-chart/curve-chart.js";
 
@@ -170,6 +171,20 @@ describe("computeCurveYAxis", () => {
     );
     expect(min).toBeGreaterThan(9);
     expect(max).toBeLessThan(13);
+  });
+});
+
+describe("prepareCurveSeriesData", () => {
+  it("drops seed points and sorts by time", () => {
+    const data = prepareCurveSeriesData([
+      { time: 300, value: 1, seed: true },
+      { time: 100, value: 2 },
+      { time: 200, value: 3 },
+    ]);
+    expect(data).toEqual([
+      [100, 2],
+      [200, 3],
+    ]);
   });
 });
 

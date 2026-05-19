@@ -5,6 +5,7 @@ import {
   appendCurveSample,
   buildCurveOption,
   computeCurveTimeAxis,
+  resolveCurveAxisNow,
   formatCurveAxisTooltip,
   formatCurveSeriesLabel,
   trimCurveBuffer,
@@ -30,6 +31,14 @@ describe("curve-chart buffer", () => {
     }
     expect(buffer).toHaveLength(5);
     expect(buffer.at(-1).value).toBe(4);
+  });
+});
+
+describe("resolveCurveAxisNow", () => {
+  it("uses latest sample time when ahead of wall clock", () => {
+    const now = 1_700_000_000_000;
+    const axisNow = resolveCurveAxisNow([{ samples: [{ time: now + 5000, value: 1 }] }], now);
+    expect(axisNow).toBe(now + 5000);
   });
 });
 

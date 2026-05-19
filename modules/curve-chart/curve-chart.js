@@ -3,8 +3,8 @@
 export const CURVE_MAX_POINTS = 1800;
 export const CURVE_WINDOW_MS = 60_000;
 export const CURVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-/** 实时刷新间隔（约 6.7Hz），减轻 setOption 与图例交互争用 */
-export const CURVE_FLUSH_INTERVAL_MS = 150;
+/** 实时刷新间隔（约 20Hz），与 UDP 入站合并后仍尽量逐点可见 */
+export const CURVE_FLUSH_INTERVAL_MS = 50;
 /** 与页面 panel 融合，不用独立纯黑底 */
 export const CURVE_BG = "transparent";
 
@@ -46,6 +46,15 @@ export function appendCurveSample(buffer, sample, options = {}) {
  * @param {number} now
  * @param {number} windowMs
  */
+/** 时间轴右端：取「当前时刻」与最新采样时刻的较大值，避免数据落在可视窗外 */
+export function resolveCurveAxisNow(series, fallbackNow = Date.now()) {
+  const times = (series || [])
+    .flatMap((item) => (item.samples || []).map((s) => s.time))
+    .filter((t) => Number.isFinite(t));
+  if (!times.length) return fallbackNow;
+  return Math.max(fallbackNow, ...times);
+}
+
 export function computeCurveTimeAxis(series, now, windowMs = CURVE_WINDOW_MS) {
   const times = (series || [])
     .flatMap((item) => (item.samples || []).map((s) => s.time))
@@ -97,10 +106,10 @@ export function formatCurveAxisTooltip(params) {
  * @param {{ viewName?: string, emptyTitle?: string, emptySubtitle?: string, series: Array<{ code: string, name?: string, paramName?: string, color: string, samples: CurveSample[] }>, now?: number, windowMs?: number, backgroundColor?: string, axisZoom?: { xMin?: number, xMax?: number, yMin?: number, yMax?: number } }} params
  */
 export function buildCurveOption(params) {
-  const now = Number(params.now) || Date.now();
+  const series = params.series || [];
+  const now = resolveCurveAxisNow(series, Number(params.now) || Date.now());
   const windowMs = params.windowMs ?? CURVE_WINDOW_MS;
   const backgroundColor = params.backgroundColor ?? CURVE_BG;
-  const series = params.series || [];
   const values = series.flatMap((item) => (item.samples || []).map((s) => s.value)).filter(Number.isFinite);
   const yMin = values.length ? Math.min(...values) : 0;
   const yMax = values.length ? Math.max(...values) : 1;
@@ -166,19 +175,22 @@ export function buildCurveOption(params) {
       type: "value",
       min: yAxisMin,
       max: yAxisMax,
-      scale: true,
+      scale: false,
       axisLine: { show: false },
       axisTick: { show: false },
       splitLine: { lineStyle: { color: "rgba(37,46,66,.72)" } },
       axisLabel: { color: "#76839b", fontFamily: "Consolas, monospace", fontSize: 11 },
     },
-    series: series.map((item) => ({
+    series: series.map((item) => {
+      const pointCount = (item.samples || []).length;
+      return {
       id: item.code,
       name: formatCurveSeriesLabel(item.code, item.name || item.paramName),
       type: "line",
-      showSymbol: false,
+      showSymbol: pointCount > 0 && pointCount <= 4,
+      symbolSize: 5,
       smooth: false,
-      step: "end",
+      sampling: "none",
       lineStyle: { color: item.color, width: 1 },
       itemStyle: { color: item.color },
       areaStyle: {
@@ -187,7 +199,8 @@ export function buildCurveOption(params) {
         color: hexToRgba(item.color, 0.22),
       },
       data: (item.samples || []).map((sample) => [sample.time, sample.value]),
-    })),
+    };
+    }),
     graphic: series.length
       ? undefined
       : [
@@ -236,7 +249,7 @@ export function registerMissionCurveTheme(echarts, colorForCode) {
     backgroundColor: "transparent",
     textStyle: { color: "#76839b" },
     title: { textStyle: { color: "#76839b" } },
-    line: { smooth: true },
+    line: { smooth: false },
     timeAxis: {
       axisLine: { lineStyle: { color: "rgba(37,46,66,.72)" } },
       splitLine: { lineStyle: { color: "rgba(37,46,66,.72)" } },

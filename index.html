@@ -27,7 +27,7 @@
           <span><i class="dot pulse"></i>25fps</span>
           <span>Frame:<b id="frameCounter">582912</b></span>
           <span>UTC:<b id="utcClock">08:22:31</b></span>
-          <span class="app-version" id="appVersion" title="UUSpace Web 版本">v2.0.2</span>
+          <span class="app-version" id="appVersion" title="UUSpace Web 版本">v—</span>
         </div>
       </header>
 
@@ -54,6 +54,8 @@
         <section class="stage" id="stage"></section>
       </main>
 
+      <button type="button" class="side-rail-handle dock-rail-handle" id="dockExpandHandle" title="展开侧栏" hidden aria-label="展开遥测摘要侧栏">▶</button>
+
       <footer class="status-flow">
         <div class="status-flow-title">状态流</div>
         <div class="ticker" id="ticker"></div>
@@ -61,6 +63,7 @@
     </div>
 
     <script type="module">
+      import { APP_VERSION } from "./modules/core/app-version.js";
       import { formatTelemetryNumber } from "./modules/core/format-telemetry-number.js";
       import { createPersistenceService } from "./modules/core/persistence-service.js";
       import {
@@ -107,7 +110,9 @@
         snapshotWorkspaceFromState,
         saveWorkspaceSettings,
       };
-      window.UUSPACE_APP_VERSION = "2.0.0";
+      window.UUSPACE_APP_VERSION = APP_VERSION;
+      const verEl = document.getElementById("appVersion");
+      if (verEl) verEl.textContent = `v${APP_VERSION}`;
       window.UUSPACE_SEARCH_HISTORY = {
         TABLE_SEARCH_HISTORY_MAX,
         filterSearchHistory,

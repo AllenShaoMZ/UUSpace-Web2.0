@@ -271,7 +271,11 @@ const curveChartInstances = new Map();
 let curveChartFlushTimer = null;
 let curveChartFlushInterval = null;
 
-const APP_VERSION = typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.0";
+const APP_VERSION =
+  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.3";
+
+/** @type {Map<string, number>} 每通道单调递增时间戳，避免同包时间相同导致 ECharts 合并丢点 */
+const curveSampleTimeByCode = new Map();
 
 function getUserSettingsApi() {
   return window.UUSPACE_USER_SETTINGS || null;
@@ -403,18 +407,25 @@ function applyTableSearchValue(value, { commitHistory = true } = {}) {
   state.tableSearch = text;
   if (commitHistory) commitTableSearch(text);
   else schedulePersistWorkspace();
+  updateWaveRailContent();
   const input = document.getElementById("paramSearch");
-  if (input) {
-    const keyword = text.trim().toLowerCase();
-    document.querySelectorAll("tr[data-param-row]").forEach((row) => {
-      row.style.display = !keyword || row.textContent.toLowerCase().includes(keyword)
-        ? getDefaultDisplayForRow(row)
-        : "none";
-    });
-  }
-  renderView();
+  if (input) input.value = text;
   restoreInputFocus("paramSearch", text);
   requestAnimationFrame(updateTableSearchHistoryPanel);
+}
+
+function bindTableSearchInput() {
+  /* 输入逻辑在 bindViewActions 的 stage 委托中处理（避免整页 renderView） */
+}
+
+function scheduleTableSearchUpdate(input) {
+  clearTimeout(state.searchDebounceTimers.paramSearch);
+  state.searchDebounceTimers.paramSearch = setTimeout(() => {
+    state.tableSearch = input.value;
+    schedulePersistWorkspace();
+    updateWaveRailContent();
+    updateTableSearchHistoryPanel();
+  }, 200);
 }
 
 function flushPersistWorkspace() {
@@ -462,10 +473,24 @@ function resizeTrendCanvas() {
   });
 }
 
+function syncDockRailHandle() {
+  const handle = document.getElementById("dockExpandHandle");
+  if (!handle) return;
+  handle.hidden = !state.dockCollapsed;
+}
+
+function setDockCollapsed(collapsed) {
+  state.dockCollapsed = !!collapsed;
+  document.querySelector(".workspace")?.classList.toggle("workspace--dock-collapsed", state.dockCollapsed);
+  const btn = document.getElementById("collapseSummary");
+  if (btn) btn.title = state.dockCollapsed ? "展开侧栏" : "隐藏侧栏";
+  syncDockRailHandle();
+}
+
 function init() {
   hydrateWorkspaceFromStorage();
   ensureBuiltinTableViews();
-  document.querySelector(".workspace")?.classList.toggle("workspace--dock-collapsed", !!state.dockCollapsed);
+  setDockCollapsed(state.dockCollapsed);
   const verEl = document.getElementById("appVersion");
   if (verEl) verEl.textContent = `v${APP_VERSION}`;
   renderNavigation();
@@ -634,6 +659,12 @@ function renderView() {
   if (state.activeView === "curve") {
     requestAnimationFrame(() => {
       mountCurveCharts();
+      requestAnimationFrame(() => {
+        flushCurveChartsNow();
+        curveChartInstances.forEach((entry) => {
+          if (entry.host?.clientWidth > 0 && entry.host?.clientHeight > 0) entry.chart?.resize();
+        });
+      });
       startCurveChartLoop();
     });
   }
@@ -1069,6 +1100,97 @@ function getAllTelemetryRows() {
   return state.rowsCache;
 }
 
+function buildTableSearchGroups() {
+  const keyword = state.tableSearch.trim().toLowerCase();
+  if (!keyword) return [];
+  return protocolRules
+    .map((rule) => {
+      const rows = getTelemetryRowsForSheet(rule.sheet)
+        .filter((row) => {
+          if (!row.code) return false;
+          return [row.code, row.name, row.group, row.frame, row.waveNo, row.remark, row.formula, row.unit]
+            .filter(Boolean)
+            .some((value) => String(value).toLowerCase().includes(keyword));
+        })
+        .slice(0, 200)
+        .map((row) => ({
+          code: row.code,
+          name: `${row.code} ${row.name}`,
+          sheet: rule.sheet,
+          port: rule.port,
+        }));
+      return { name: `Sheet ${rule.sheet} / ${rule.port}`, items: rows };
+    })
+    .filter((group) => group.items.length);
+}
+
+function renderWaveRailSelectedHtml() {
+  const rows = getSelectedWaveRows();
+  if (!rows.length) {
+    return `<div class="empty-hint">在上方搜索并勾选波道，或勾选左侧表格行，再点「添加表格」。</div>`;
+  }
+  return rows
+    .map(
+      (param) =>
+        `<div class="favorite-item" data-param-card="${escapeAttr(param.code)}"><span>${escapeAttr(param.code)}</span><strong>${escapeAttr(param.name)}</strong></div>`,
+    )
+    .join("");
+}
+
+function renderWaveRailListHtml() {
+  const keyword = state.tableSearch.trim();
+  const picked = state.selectedWaveCodes;
+  if (!keyword) return renderWaveRailSelectedHtml();
+  const groups = buildTableSearchGroups();
+  const searchBlock = !groups.length
+    ? `<div class="empty-hint">未找到匹配「${escapeAttr(keyword)}」的参数</div>`
+    : `<div class="channel-groups wave-rail-search-groups auto-hide-scrollbar">
+        ${groups
+          .map(
+            (group) => `
+              <div class="channel-group">
+                <h4>${group.name}</h4>
+                ${group.items
+                  .map(
+                    (item) => `
+                      <label class="check-row" data-wave-search-row="${escapeAttr(item.code)}">
+                        <span>${escapeAttr(item.name)}</span>
+                        <input type="checkbox" class="wave-check" data-wave-select="${escapeAttr(item.code)}" ${picked.has(item.code) ? "checked" : ""} />
+                      </label>
+                    `,
+                  )
+                  .join("")}
+              </div>
+            `,
+          )
+          .join("")}
+      </div>`;
+  return `
+    <div class="wave-rail-search-hint">搜索「${escapeAttr(keyword)}」· 可跨 Sheet 勾选</div>
+    ${searchBlock}
+    <div class="wave-rail-selected-block">
+      <h4>已选波道 <small>${picked.size} 项</small></h4>
+      ${renderWaveRailSelectedHtml()}
+    </div>
+  `;
+}
+
+function updateWaveRailContent() {
+  const list = document.querySelector(".wave-select-rail .favorite-list");
+  if (!list) return;
+  if (state.tableSearch.trim()) {
+    state.waveDrawerOpen = true;
+    const rail = document.querySelector(".wave-select-rail");
+    rail?.classList.add("open");
+    rail?.classList.remove("collapsed");
+  }
+  list.innerHTML = renderWaveRailListHtml();
+  const drawerBtn = document.querySelector("[data-toggle-wave-drawer]");
+  if (drawerBtn) {
+    drawerBtn.textContent = `${state.waveDrawerOpen ? "收起波道" : "已选波道"} ${state.selectedWaveCodes.size}`;
+  }
+}
+
 function buildCurveChannelGroups() {
   const keyword = state.curveSearch.trim().toLowerCase();
   const sheetGroups = protocolRules
@@ -1116,15 +1238,108 @@ function colorForCode(code) {
   return palette[hash % palette.length];
 }
 
+function nextCurveSampleTime(code, packetTimeMs) {
+  const base = Number(packetTimeMs) || Date.now();
+  const prev = curveSampleTimeByCode.get(code);
+  const next = prev == null ? base : Math.max(base, prev + 1);
+  curveSampleTimeByCode.set(code, next);
+  return next;
+}
+
 function pushCurvePoint(code, value, time) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return;
   const api = getCurveChartApi();
-  const sample = { time: time || Date.now(), value: numeric };
+  const sample = { time: nextCurveSampleTime(code, time), value: numeric };
   const buffer = state.curveBuffers[code] || [];
   state.curveBuffers[code] = api?.appendCurveSample
-    ? api.appendCurveSample(buffer, sample, { now: sample.time, maxPoints: api.CURVE_MAX_POINTS })
+    ? api.appendCurveSample(buffer, sample, { now: Date.now(), maxPoints: api.CURVE_MAX_POINTS })
     : [...buffer, sample].slice(-1800);
+  if (state.activeView === "curve") scheduleCurveChartFlush();
+}
+
+function seedCurveBuffersForCodes(codes) {
+  const rowsByCode = new Map(getAllTelemetryRows().map((row) => [row.code, row]));
+  const unique = [...new Set((codes || []).filter(Boolean))];
+  unique.forEach((code) => {
+    if ((state.curveBuffers[code] || []).length >= 2) return;
+    let val = NaN;
+    for (const sheet of Object.values(state.sheetLiveValues || {})) {
+      const live = sheet[code];
+      if (live != null && Number.isFinite(Number(live.value))) {
+        val = Number(live.value);
+        break;
+      }
+    }
+    if (!Number.isFinite(val)) {
+      const row = rowsByCode.get(code);
+      val = parseNumber(row?.value);
+    }
+    if (Number.isFinite(val)) {
+      pushCurvePoint(code, val, Date.now());
+      pushCurvePoint(code, val, Date.now());
+    }
+  });
+}
+
+function findCurveChartHost(chartId) {
+  if (!chartId) return null;
+  try {
+    return document.querySelector(`[data-curve-chart="${CSS.escape(String(chartId))}"]`);
+  } catch {
+    return document.querySelector(`[data-curve-chart="${chartId}"]`);
+  }
+}
+
+function ensureCurveBufferHasPoints(code) {
+  const buf = state.curveBuffers[code] || [];
+  if (buf.length >= 2) return;
+  seedCurveBuffersForCodes([code]);
+}
+
+function ensureCurveChartEntry(chart, echarts, api) {
+  const host = findCurveChartHost(chart.id);
+  if (!host) return null;
+  let entry = curveChartInstances.get(chart.id);
+  if (!entry || entry.host !== host) {
+    if (entry) disposeCurveChart(chart.id);
+    const inst = echarts.init(host, "mission-curve", { renderer: "canvas" });
+    entry = { chart: inst, host, legendSelected: entry?.legendSelected || {} };
+    inst.on("legendselectchanged", (ev) => {
+      entry.legendSelected = { ...(ev.selected || {}) };
+    });
+    curveChartInstances.set(chart.id, entry);
+    bindCurveShiftZoom(host, inst, chart.id);
+    bindCurveChartResize(entry);
+  }
+  return entry;
+}
+
+function bindCurveChartResize(entry) {
+  if (!entry?.host || !entry.chart || entry.resizeObserver) return;
+  entry.resizeObserver = new ResizeObserver(() => {
+    const w = entry.host.clientWidth;
+    const h = entry.host.clientHeight;
+    if (w < 2 || h < 2) return;
+    entry.chart.resize();
+    const chartId = entry.host.getAttribute("data-curve-chart");
+    const view = getActiveCurveView();
+    const chart = (view?.charts || []).find((item) => item.id === chartId);
+    if (!chart) return;
+    const option = buildCurveOptionForChart(chart);
+    if (option.legend && entry.legendSelected) {
+      option.legend = { ...option.legend, selected: { ...entry.legendSelected } };
+    }
+    entry.chart.setOption(option, { notMerge: true, lazyUpdate: false });
+  });
+  entry.resizeObserver.observe(entry.host);
+}
+
+function unbindCurveChartResize(entry) {
+  if (entry?.resizeObserver) {
+    entry.resizeObserver.disconnect();
+    entry.resizeObserver = null;
+  }
 }
 
 function getStagedCurveCodes() {
@@ -1191,6 +1406,12 @@ function switchCurveView(viewId) {
       : `<article class="view-surface chart-wrap empty-curve-panel"><div class="empty-hint">还没有 Tab 页面。点「新建Tab页面」建空白页，或勾选波道后点「新建曲线页」。</div></article>`;
     requestAnimationFrame(() => {
       mountCurveCharts();
+      requestAnimationFrame(() => {
+        flushCurveChartsNow();
+        curveChartInstances.forEach((entry) => {
+          if (entry.host?.clientWidth > 0 && entry.host?.clientHeight > 0) entry.chart?.resize();
+        });
+      });
       bindTabScrollers(document.querySelector(".curve-page-tabs-scroll") || document);
     });
   }
@@ -1324,6 +1545,7 @@ function addCurveChartFromSelection(codes) {
   tab = { ...tab, charts: [...(tab.charts || []), chart] };
   state.curveViews = getCurveViews().map((view) => (view.id === tab.id ? tab : view));
   state.activeCurveViewId = tab.id;
+  seedCurveBuffersForCodes(uniqueCodes);
   schedulePersistWorkspace();
   return { tab, chart };
 }
@@ -1380,6 +1602,7 @@ function getEchartsLib() {
 function disposeCurveChart(chartId) {
   const entry = curveChartInstances.get(chartId);
   if (!entry) return;
+  unbindCurveChartResize(entry);
   try {
     entry.chart?.dispose();
   } catch {
@@ -1432,7 +1655,10 @@ function buildCurveOptionForChart(chart, axisZoomOverride) {
 function mountCurveCharts() {
   const echarts = getEchartsLib();
   const api = getCurveChartApi();
-  if (!echarts || !api) return;
+  if (!echarts || !api) {
+    if (state.activeView === "curve") requestAnimationFrame(mountCurveCharts);
+    return;
+  }
   api.registerMissionCurveTheme?.(echarts, colorForCode);
 
   const activeView = getActiveCurveView();
@@ -1440,21 +1666,8 @@ function mountCurveCharts() {
   if (activeView) {
     (activeView.charts || []).forEach((chart) => {
       liveChartIds.add(chart.id);
-      const host = document.querySelector(`[data-curve-chart="${chart.id}"]`);
-      if (!host) return;
-      let entry = curveChartInstances.get(chart.id);
-      if (!entry || entry.host !== host) {
-        if (entry) disposeCurveChart(chart.id);
-        const inst = echarts.init(host, "mission-curve", { renderer: "canvas" });
-        entry = { chart: inst, host, legendSelected: entry?.legendSelected || {} };
-        inst.on("legendselectchanged", (ev) => {
-          entry.legendSelected = { ...(ev.selected || {}) };
-        });
-        curveChartInstances.set(chart.id, entry);
-        bindCurveShiftZoom(host, inst, chart.id);
-      } else if (entry.chart) {
-        bindCurveShiftZoom(host, entry.chart, chart.id);
-      }
+      (chart.codes || []).forEach((code) => ensureCurveBufferHasPoints(code));
+      ensureCurveChartEntry(chart, echarts, api);
     });
   }
   [...curveChartInstances.keys()].forEach((chartId) => {
@@ -1532,7 +1745,7 @@ function openCurveZoomModal(chartId, axisZoom) {
     hasRendered: false,
     flushTimer: setInterval(() => {
       if (root.classList.contains("open")) flushCurveZoomModalChart();
-    }, getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 150),
+    }, getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 50),
   };
   const host = root.querySelector("[data-curve-zoom-chart]");
   const echarts = getEchartsLib();
@@ -1639,37 +1852,32 @@ function bindCurveShiftZoom(host, chart, chartId) {
   });
 }
 
+/** 与 git 197247d 一致：每次 flush 全量 setOption + resize，避免增量 merge 丢数据 */
 function flushCurveChartsNow() {
   if (state.activeView !== "curve") return;
+  const echarts = getEchartsLib();
+  const api = getCurveChartApi();
+  if (!echarts || !api) return;
   const activeView = getActiveCurveView();
   if (!activeView) return;
   (activeView.charts || []).forEach((chart) => {
-    const entry = curveChartInstances.get(chart.id);
+    (chart.codes || []).forEach((code) => ensureCurveBufferHasPoints(code));
+    const entry = ensureCurveChartEntry(chart, echarts, api);
     if (!entry?.chart) return;
     const option = buildCurveOptionForChart(chart);
     if (option.legend && entry.legendSelected) {
       option.legend = { ...option.legend, selected: { ...entry.legendSelected } };
     }
-    if (!entry.hasRendered) {
-      entry.chart.setOption(option, { notMerge: true });
-      entry.hasRendered = true;
-    } else {
-      entry.chart.setOption(
-        { series: option.series, xAxis: option.xAxis, yAxis: option.yAxis, tooltip: option.tooltip },
-        { notMerge: false, lazyUpdate: true },
-      );
-    }
-    if (entry._lastResizeW !== entry.host?.clientWidth || entry._lastResizeH !== entry.host?.clientHeight) {
-      entry._lastResizeW = entry.host?.clientWidth;
-      entry._lastResizeH = entry.host?.clientHeight;
-      entry.chart.resize();
-    }
+    entry.chart.setOption(option, { notMerge: true, lazyUpdate: false });
+    const w = entry.host?.clientWidth || 0;
+    const h = entry.host?.clientHeight || 0;
+    if (w > 1 && h > 1) entry.chart.resize();
   });
 }
 
 function scheduleCurveChartFlush() {
   if (state.activeView !== "curve") return;
-  const delay = getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 250;
+  const delay = getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 50;
   if (curveChartFlushTimer) return;
   curveChartFlushTimer = setTimeout(() => {
     curveChartFlushTimer = null;
@@ -1679,7 +1887,7 @@ function scheduleCurveChartFlush() {
 
 function startCurveChartLoop() {
   stopCurveChartLoop();
-  const delay = Math.max(250, getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 250);
+  const delay = Math.max(50, getCurveChartApi()?.CURVE_FLUSH_INTERVAL_MS || 50);
   curveChartFlushInterval = setInterval(() => {
     if (state.activeView !== "curve") {
       stopCurveChartLoop();
@@ -1725,18 +1933,11 @@ function normalizePoints(points, minValue = null, maxValue = null) {
 function renderTelemetryTable() {
   const activeRows = getActiveTelemetryRows();
   const sourceRows = activeRows.length ? activeRows : (state.liveTelemetry.length ? state.liveTelemetry : parameters);
-  const filteredRows = sourceRows.filter((param) => {
-    const keyword = state.tableSearch.trim().toLowerCase();
-    const matchText =
-      !keyword ||
-      [param.code, param.name, param.group, param.frame, param.waveNo, param.remark, param.formula]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(keyword));
+  const rows = sourceRows.filter((param) => {
     if (state.dataFilter === "告警") return param.status === "告警" || param.status === "关注";
     if (state.dataFilter === "收藏") return state.favorites.has(param.code);
-    return matchText;
+    return true;
   });
-  const rows = filteredRows;
   const sheetStat = getSheetStat(state.activeSheet);
   const selectedView = getActiveTableView();
   const customTableViews = state.tableViews.filter((view) => !view.builtin);
@@ -1762,7 +1963,7 @@ function renderTelemetryTable() {
         </div>
         <div class="data-toolbar">
           <div class="search-history-wrap">
-            <input class="search-box" id="paramSearch" value="${escapeAttr(state.tableSearch)}" placeholder="搜索参数、代号、分组、路序、公式" autocomplete="off" aria-expanded="false" aria-controls="paramSearchHistoryPanel" />
+            <input class="search-box" id="paramSearch" value="${escapeAttr(state.tableSearch)}" placeholder="搜索参数、代号、分组、路序（跨 Sheet 勾选）" autocomplete="off" aria-expanded="false" aria-controls="paramSearchHistoryPanel" />
             <div class="search-history-panel" id="paramSearchHistoryPanel" role="listbox" aria-label="最近搜索（最多 8 条）"></div>
           </div>
           <div class="segmented" aria-label="参数筛选">
@@ -1790,17 +1991,13 @@ function renderTelemetryTable() {
         <div class="data-grid">
           <aside class="favorite-rail wave-select-rail ${state.waveDrawerOpen ? "open" : "collapsed"}">
             <h3>已选波道</h3>
-            <div class="favorite-list">
-              ${getSelectedWaveRows()
-                .map((param) => `<div class="favorite-item" data-param-card="${param.code}"><span>${param.code}</span><strong>${param.name}</strong></div>`)
-                .join("") || `<div class="empty-hint">勾选左侧表格里的波道后，可以添加表格，或切到曲线页点「新建曲线页」。</div>`}
-            </div>
+            <div class="favorite-list">${renderWaveRailListHtml()}</div>
           </aside>
           <section class="table-wrap">
             <h3 class="table-wrap-title">${
               selectedView
-                ? `${escapeAttr(selectedView.name)} <small>${rows.length} 行${state.tableSearch.trim() ? ` · 搜索「${escapeAttr(state.tableSearch.trim())}」` : ""}</small>`
-                : `表${state.activeSheet} <small>${rows.length}/${filteredRows.length} 行</small>`
+                ? `${escapeAttr(selectedView.name)} <small>${rows.length} 行</small>`
+                : `表${state.activeSheet} <small>${rows.length} 行</small>`
             }</h3>
             <div class="table-scroll auto-hide-scrollbar" aria-label="遥测参数列表">
             <table class="param-table">
@@ -1850,7 +2047,6 @@ function renderCurve() {
         <div class="view-header compact-head">
           <div class="view-title">曲线通道<small>${activeCurveView ? `当前 Tab：${activeCurveView.name || "未命名"}` : "勾选波道后点「新建曲线页」绘制"}</small></div>
           <div class="header-actions">
-            <button type="button" class="ghost-button" data-toggle-curve-channel-panel>${state.curveChannelPanelCollapsed ? "显示通道栏" : "隐藏通道栏"}</button>
             <button class="primary-button" data-add-curve title="根据所选波道在当前 Tab 绘制曲线">新建曲线页</button>
           </div>
         </div>
@@ -1917,6 +2113,7 @@ function renderCurve() {
             }
           </div>
           <div class="header-actions curve-workbar-actions">
+            <button type="button" class="ghost-button" data-toggle-curve-channel-panel>${state.curveChannelPanelCollapsed ? "显示通道栏" : "隐藏通道栏"}</button>
             <button class="ghost-button" data-create-curve-view title="新建空白 Tab 页面，不添加波道">新建Tab页面</button>
             <button class="ghost-button" data-clear-curves>清空曲线</button>
             ${
@@ -2083,14 +2280,19 @@ function bindViewActions() {
   if (stage.dataset.uuspaceBound === "true") return;
   stage.dataset.uuspaceBound = "true";
 
+  bindTableSearchInput();
   const liveFilters = {
-    paramSearch: createLiveFilter("paramSearch", "tr[data-param-row]", "tableSearch", 300),
     commandSearch: createLiveFilter("commandSearch", "article[data-command-card]", "commandFilter", 300),
     channelSearch: createLiveFilter("channelSearch", "[data-channel-row]", "curveSearch", 300),
   };
 
   stage.addEventListener("click", (ev) => {
-    if (ev.target.closest && (ev.target.closest("[data-wave-select]") || ev.target.closest("[data-wave-cell]"))) {
+    if (
+      ev.target.closest &&
+      (ev.target.closest("[data-wave-select]") ||
+        ev.target.closest("[data-wave-cell]") ||
+        ev.target.closest("[data-wave-search-row]"))
+    ) {
       return; // let checkbox cell change handler manage selection, avoid re-render before change event
     }
     const btn = ev.target.closest && ev.target.closest("[data-table-view],[data-remove-table-view],[data-add-table],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-curve-channel-panel],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
@@ -2164,7 +2366,12 @@ function bindViewActions() {
         `${result?.tab?.name || ""} · ${codes.join(", ")}`,
       );
       clearCurveSelections();
-      return renderView();
+      renderView();
+      requestAnimationFrame(() => {
+        mountCurveCharts();
+        flushCurveChartsNow();
+      });
+      return;
     }
     if (btn.dataset.createCurveView !== undefined) {
       const view = createCurveTabPage();
@@ -2177,6 +2384,7 @@ function bindViewActions() {
       state.activeCurveViewId = "";
       clearCurveSelections();
       state.curveBuffers = {};
+      curveSampleTimeByCode.clear();
       schedulePersistWorkspace();
       appendStatusEvent("曲线通道已清空");
       return renderView();
@@ -2233,6 +2441,9 @@ function bindViewActions() {
       state.curveChannelPanelCollapsed = !state.curveChannelPanelCollapsed;
       const root = document.querySelector(".view.curve-view");
       if (root) root.classList.toggle("curve-channel-collapsed", state.curveChannelPanelCollapsed);
+      document.querySelectorAll("[data-toggle-curve-channel-panel]").forEach((el) => {
+        el.textContent = state.curveChannelPanelCollapsed ? "显示通道栏" : "隐藏通道栏";
+      });
       return;
     }
     if (btn.dataset.renameTable !== undefined) return;
@@ -2347,6 +2558,11 @@ function bindViewActions() {
 
   // delegated change/input handlers
   stage.addEventListener("compositionstart", (ev) => {
+    if (ev.target?.id === "paramSearch") {
+      state.isComposing = true;
+      clearTimeout(state.searchDebounceTimers.paramSearch);
+      return;
+    }
     const filter = liveFilters[ev.target && ev.target.id];
     if (filter) {
       state.isComposing = true;
@@ -2354,6 +2570,11 @@ function bindViewActions() {
     }
   });
   stage.addEventListener("compositionend", (ev) => {
+    if (ev.target?.id === "paramSearch") {
+      state.isComposing = false;
+      scheduleTableSearchUpdate(ev.target);
+      return;
+    }
     const filter = liveFilters[ev.target && ev.target.id];
     if (filter) {
       state.isComposing = false;
@@ -2478,6 +2699,10 @@ function bindViewActions() {
       }
       return;
     }
+    if (tgt?.id === "paramSearch") {
+      if (!state.isComposing) scheduleTableSearchUpdate(tgt);
+      return;
+    }
     const filter = liveFilters[tgt && tgt.id];
     if (filter) filter.input(tgt);
   });
@@ -2485,10 +2710,11 @@ function bindViewActions() {
 
 function bindGlobalActions() {
   $("#collapseSummary").addEventListener("click", () => {
-    state.dockCollapsed = !state.dockCollapsed;
-    document.querySelector(".workspace")?.classList.toggle("workspace--dock-collapsed", state.dockCollapsed);
-    const btn = $("#collapseSummary");
-    if (btn) btn.title = state.dockCollapsed ? "展开侧栏" : "隐藏侧栏";
+    setDockCollapsed(!state.dockCollapsed);
+  });
+  const dockExpand = document.getElementById("dockExpandHandle");
+  dockExpand?.addEventListener("click", () => {
+    setDockCollapsed(false);
   });
   $("#ackAllBtn").addEventListener("click", () => appendStatusEvent("告警面板已确认"));
 }
@@ -2928,17 +3154,7 @@ function updateWaveSelectionInPlace() {
   if (drawerBtn) {
     drawerBtn.textContent = `${state.waveDrawerOpen ? "收起波道" : "已选波道"} ${count}`;
   }
-  const list = document.querySelector(".wave-select-rail .favorite-list");
-  if (!list) return;
-  const rows = getSelectedWaveRows();
-  list.innerHTML = rows.length
-    ? rows
-        .map(
-          (param) =>
-            `<div class="favorite-item" data-param-card="${param.code}"><span>${param.code}</span><strong>${param.name}</strong></div>`,
-        )
-        .join("")
-    : `<div class="empty-hint">勾选左侧表格里的波道后，可以添加表格，或切到曲线页点「新建曲线页」。</div>`;
+  updateWaveRailContent();
 }
 
 function updateCurveViewTabsInPlace() {
@@ -3217,7 +3433,7 @@ function syncPacketValues(packet) {
   const nextValues = {};
   packet.parsed.values.forEach((item) => {
     nextValues[item.code] = { ...item, updatedAt: packet.time };
-    pushCurvePoint(item.code, Number(item.value), Date.parse(packet.time) || Date.now());
+    pushCurvePoint(item.code, Number(item.value), Date.now());
   });
   store.set("sheetLiveValues", { ...state.sheetLiveValues, [sheetKey]: nextValues });
 }
@@ -3273,6 +3489,39 @@ function loadTelemetryDefinitions(showEvent) {
     });
 }
 
+/** 在浏览器控制台执行 UUSPACE_API.debugCurve() 查看曲线诊断信息 */
+function debugCurveDiagnostics() {
+  const view = getActiveCurveView();
+  const chart = (view?.charts || [])[0];
+  const code = chart?.codes?.[0];
+  const host = chart?.id ? findCurveChartHost(chart.id) : null;
+  const rect = host?.getBoundingClientRect?.();
+  const entry = chart?.id ? curveChartInstances.get(chart.id) : null;
+  const buffer = code ? state.curveBuffers[code] || [] : [];
+  const report = {
+    echartsLoaded: !!getEchartsLib(),
+    curveApiLoaded: !!getCurveChartApi(),
+    activeView: state.activeView,
+    udpConnected: !!state.udpBridge?.connected,
+    udpTotal: state.udpBridge?.total ?? 0,
+    curveTab: view?.name ?? null,
+    chartId: chart?.id ?? null,
+    firstCode: code ?? null,
+    hostFound: !!host,
+    hostSize: rect ? { w: Math.round(rect.width), h: Math.round(rect.height) } : null,
+    chartInstance: !!entry?.chart,
+    bufferPointCount: buffer.length,
+    bufferLast3: buffer.slice(-3),
+    plottedCodes: getAllCurveViewCodes(),
+  };
+  console.table(report);
+  if (!report.echartsLoaded) console.warn("[曲线] ECharts 未加载，检查 index.html 中 echarts.min.js");
+  if (!report.curveApiLoaded) console.warn("[曲线] UUSPACE_CURVE 未就绪，检查模块脚本是否报错");
+  if (report.hostFound && report.hostSize?.h < 10) console.warn("[曲线] 图表容器高度为 0，多为布局问题");
+  if (code && report.bufferPointCount === 0) console.warn("[曲线] 缓冲无数据，确认 UDP 在收包且代号匹配");
+  return report;
+}
+
 window.UUSPACE_API = {
   state,
   parameters,
@@ -3287,6 +3536,9 @@ window.UUSPACE_API = {
   renderTicker,
   appendStatusEvent,
   connectUdpBridge,
+  debugCurve: debugCurveDiagnostics,
+  flushCurveChartsNow,
+  mountCurveCharts,
 };
 
 function bootApp() {

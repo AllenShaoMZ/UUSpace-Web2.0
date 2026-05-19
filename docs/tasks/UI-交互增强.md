@@ -14,7 +14,9 @@
 | **UI-03** | 子 Agent（表格/曲线） | Tab 过多时用箭头+滚轮横向浏览，隐藏横向滚动条 | `app.js`、`styles.css` | ✅ 已完成 | `renderTabScroller` + `bindTabScrollers`，表格/曲线 Tab 已接入 |
 | **UI-05** | 主 Agent | 性能：曲线刷新去整页重绘、分列下拉就地更新 | `app.js` | ✅ 已完成 | `switchCurveView` / `applyCurveLayoutColumns`；刷新间隔 250ms |
 | **UI-06** | 主 Agent | 布局裁切修复 + 侧栏可隐藏 | `app.js`、`styles.css`、`index.html` | ✅ 已完成 | 全局侧栏 ◀；曲线通道栏隐藏；workbar 网格约束 |
-| **UI-07** | 主 Agent | 曲线锯齿波（对齐桌面 SciChart） | `modules/curve-chart/curve-chart.js` | ✅ 已完成 | `smooth:false` + `step:'end'` |
+| **UI-07** | 主 Agent | 曲线锯齿波（对齐桌面 SciChart） | `modules/curve-chart/curve-chart.js` | ✅ 已完成 | `smooth:false`、单调时间戳、`appendData` 逐点 |
+| **UI-08** | 主 Agent | 侧栏折叠后可恢复；版本号单一来源 | `index.html`、`app-version.js` | ✅ 已完成 | 左侧 ▶ 手柄；`v2.0.3` |
+| **UI-09** | 主 Agent | 曲线空白修复 + 表格跨 Sheet 搜索勾选 | `app.js`、`curve-chart.js` | ✅ 已完成 | 种子点/时间轴；`tableSearchPickPanel` |
 
 > 主 Agent 统筹：两项同批合并落地，避免 `app.js` / `styles.css` 冲突；后续 **UI-01**（曲线 7200s/24h）、**UI-02**（表格全局搜索面板）待排期。
 
@@ -32,7 +34,7 @@
 ### 待办
 
 - [ ] **UI-01** 曲线默认视窗 7200s、缓冲最大 24h（含抽稀策略）
-- [ ] **UI-02** 表格全局搜索：搜索框下方结果列表 + 跨 Sheet 勾选（方案 A）
+- [x] **UI-02** 表格全局搜索：搜索框下方结果列表 + 跨 Sheet 勾选（方案 A）
 
 ## 验收
 

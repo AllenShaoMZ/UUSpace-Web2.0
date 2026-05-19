@@ -397,6 +397,38 @@ button {
   pointer-events: none;
 }
 
+.side-rail-handle {
+  position: fixed;
+  z-index: 120;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+  background: rgba(23, 29, 41, 0.96);
+  color: var(--text-soft);
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.side-rail-handle:hover {
+  background: rgba(35, 44, 62, 0.98);
+  color: var(--text);
+}
+
+.dock-rail-handle {
+  left: 0;
+  top: calc(52px + 42px + 18%);
+}
+
+.dock-rail-handle[hidden] {
+  display: none !important;
+}
+
 .dock-left {
   min-height: 0;
   min-width: 0;
@@ -920,11 +952,26 @@ button {
 }
 
 .view.split-grid.curve-view.curve-channel-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
 }
 
 .view.split-grid.curve-view.curve-channel-collapsed .channel-picker {
-  display: none;
+  display: none !important;
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.view.split-grid.curve-view.curve-channel-collapsed .trend-stack {
+  grid-column: 1;
+  min-width: 0;
 }
 
 /* 指令控制：左侧卡片列表 + 右侧宽详情（约 46% / 54%） */
@@ -1717,6 +1764,40 @@ button {
 .command-toolbar .search-box,
 .event-toolbar .search-box {
   max-width: 320px;
+}
+
+.wave-rail-search-hint {
+  padding: 0 2px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.wave-rail-search-groups {
+  max-height: 280px;
+  overflow: auto;
+  margin-bottom: 10px;
+}
+
+.wave-rail-search-groups .channel-group h4 {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  color: var(--muted2);
+}
+
+.wave-rail-selected-block {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+
+.wave-rail-selected-block h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted2);
+}
+
+.wave-rail-selected-block h4 small {
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .search-history-wrap {

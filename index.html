@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>UUSPACE 卫星地面综测 Mission Workspace</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" as="script" crossorigin />
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -62,102 +63,9 @@
       </footer>
     </div>
 
-    <script type="module">
-      import { APP_VERSION } from "./modules/core/app-version.js";
-      import { formatTelemetryNumber } from "./modules/core/format-telemetry-number.js";
-      import { createPersistenceService } from "./modules/core/persistence-service.js";
-      import {
-        applyWorkspaceSettings,
-        loadWorkspaceSettings,
-        saveWorkspaceSettings,
-        snapshotWorkspaceFromState,
-      } from "./modules/core/user-settings.js";
-      import {
-        TABLE_SEARCH_HISTORY_MAX,
-        filterSearchHistory,
-        normalizeSearchHistory,
-        pushSearchHistory,
-      } from "./modules/core/search-history.js";
-      import {
-        TELEMETRY_COLUMNS,
-        TELEMETRY_MIN_COLUMN_WIDTH,
-        createDefaultTelemetryColumns,
-        mergeTelemetryColumns,
-        getVisibleTelemetryColumns,
-        isTelemetryColumnVisible,
-        resolveTelemetryColumnWidth,
-        clampTelemetryColumnWidth,
-        getTelemetryColumnMinWidth,
-        computeTelemetryColumnAutoWidth,
-        TELEMETRY_COLUMN_CELL_PADDING_X,
-        TELEMETRY_COLUMN_RESIZE_HANDLE_WIDTH,
-      } from "./modules/telemetry/telemetry-columns.js";
-      import {
-        CURVE_FLUSH_INTERVAL_MS,
-        CURVE_MAX_AGE_MS,
-        CURVE_MAX_POINTS,
-        CURVE_WINDOW_MS,
-        CURVE_WINDOW_OPTIONS,
-        appendCurveSample,
-        appendCurveSampleCoalesced,
-        buildCurveOption,
-        decimateCurveBuffer,
-        formatCurveSeriesLabel,
-        normalizeCurveWindowMs,
-        registerMissionCurveTheme,
-        resolveCurveMaxPoints,
-        trimCurveBuffer,
-      } from "./modules/curve-chart/curve-chart.js";
-      window.formatTelemetryNumber = formatTelemetryNumber;
-      window.UUSPACE_PERSIST = createPersistenceService();
-      window.UUSPACE_USER_SETTINGS = {
-        loadWorkspaceSettings,
-        applyWorkspaceSettings,
-        snapshotWorkspaceFromState,
-        saveWorkspaceSettings,
-      };
-      window.UUSPACE_APP_VERSION = APP_VERSION;
-      const verEl = document.getElementById("appVersion");
-      if (verEl) verEl.textContent = `v${APP_VERSION}`;
-      window.UUSPACE_SEARCH_HISTORY = {
-        TABLE_SEARCH_HISTORY_MAX,
-        filterSearchHistory,
-        normalizeSearchHistory,
-        pushSearchHistory,
-      };
-      window.UUSPACE_CURVE = {
-        CURVE_FLUSH_INTERVAL_MS,
-        CURVE_MAX_AGE_MS,
-        CURVE_MAX_POINTS,
-        CURVE_WINDOW_MS,
-        CURVE_WINDOW_OPTIONS,
-        appendCurveSample,
-        appendCurveSampleCoalesced,
-        buildCurveOption,
-        decimateCurveBuffer,
-        formatCurveSeriesLabel,
-        normalizeCurveWindowMs,
-        registerMissionCurveTheme,
-        resolveCurveMaxPoints,
-        trimCurveBuffer,
-      };
-      window.UUSPACE_TELEMETRY_COLUMNS = {
-        TELEMETRY_COLUMNS,
-        TELEMETRY_MIN_COLUMN_WIDTH,
-        createDefaultTelemetryColumns,
-        mergeTelemetryColumns,
-        getVisibleTelemetryColumns,
-        isTelemetryColumnVisible,
-        resolveTelemetryColumnWidth,
-        clampTelemetryColumnWidth,
-        getTelemetryColumnMinWidth,
-        computeTelemetryColumnAutoWidth,
-        TELEMETRY_COLUMN_CELL_PADDING_X,
-        TELEMETRY_COLUMN_RESIZE_HANDLE_WIDTH,
-      };
-    </script>
+    <script type="module" src="./modules/core/bootstrap.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
-    <script src="./app.js?v=2.0.7" defer></script>
+    <script src="./app.js?v=2.0.13" defer></script>
     <script src="./realtime.js" defer></script>
   </body>
 </html>

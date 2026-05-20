@@ -1,4 +1,6 @@
-/** @typedef {{ tableViews: object[], activeTableViewId: string, tableSearch: string, tableSearchHistory: string[], activeSheet: number, curveViews: object[], activeCurveViewId: string, curveWindowMs: number, telemetry: { columns: object, decimals: object }, favorites: string[], waveDrawerOpen: boolean }} WorkspaceSnapshot */
+/** @typedef {{ curveViews: object[], activeCurveViewId: string, layoutColumns: number, tableViews: object[], activeTableViewId: string, tableSearch: string, tableSearchHistory: string[] }} MonitorWorkspaceSnapshot */
+
+/** @typedef {{ tableViews: object[], activeTableViewId: string, tableSearch: string, tableSearchHistory: string[], activeSheet: number, curveViews: object[], activeCurveViewId: string, curveWindowMs: number, monitorWorkspace: MonitorWorkspaceSnapshot, telemetry: { columns: object, decimals: object }, favorites: string[], waveDrawerOpen: boolean }} WorkspaceSnapshot */
 
 /**
  * @param {{ load: (ns: string, fb?: unknown) => unknown }} persist
@@ -20,6 +22,7 @@ export function loadWorkspaceSettings(persist) {
     curveViews: Array.isArray(curveViews) ? curveViews : [],
     activeCurveViewId: String(persist.load("curve.activeViewId", "") || ""),
     curveWindowMs: Number(persist.load("curve.windowMs", 0)) || 0,
+    monitorWorkspace: persist.load("monitor.workspace", null) || null,
     telemetry: {
       columns: persist.load("telemetry.columns", {}) || {},
       decimals: persist.load("telemetry.decimals", {}) || {},
@@ -43,6 +46,18 @@ export function saveWorkspaceSettings(snapshot, persist) {
   persist.save("curve.views", snapshot.curveViews || []);
   persist.save("curve.activeViewId", snapshot.activeCurveViewId || "");
   persist.save("curve.windowMs", snapshot.curveWindowMs ?? 0);
+  persist.save(
+    "monitor.workspace",
+    snapshot.monitorWorkspace || {
+      curveViews: [],
+      activeCurveViewId: "",
+      layoutColumns: 1,
+      tableViews: [],
+      activeTableViewId: "",
+      tableSearch: "",
+      tableSearchHistory: [],
+    },
+  );
   persist.save("telemetry.columns", snapshot.telemetry?.columns || {});
   persist.save("telemetry.decimals", snapshot.telemetry?.decimals || {});
   persist.save("command.favorites", snapshot.favorites || []);
@@ -63,6 +78,15 @@ export function snapshotWorkspaceFromState(state) {
     curveViews: state.curveViews || [],
     activeCurveViewId: state.activeCurveViewId || "",
     curveWindowMs: state.curveWindowMs ?? 0,
+    monitorWorkspace: state.monitorWorkspace || {
+      curveViews: [],
+      activeCurveViewId: "",
+      layoutColumns: 1,
+      tableViews: [],
+      activeTableViewId: "",
+      tableSearch: "",
+      tableSearchHistory: [],
+    },
     telemetry: {
       columns: state.telemetry?.columns || {},
       decimals: state.telemetry?.decimals || {},
@@ -91,6 +115,22 @@ export function applyWorkspaceSettings(state, saved) {
   if (Array.isArray(saved.curveViews)) state.curveViews = saved.curveViews;
   if (typeof saved.activeCurveViewId === "string") state.activeCurveViewId = saved.activeCurveViewId;
   if (Number.isFinite(saved.curveWindowMs) && saved.curveWindowMs > 0) state.curveWindowMs = saved.curveWindowMs;
+  if (saved.monitorWorkspace && typeof saved.monitorWorkspace === "object") {
+    state.monitorWorkspace = {
+      curveViews: Array.isArray(saved.monitorWorkspace.curveViews) ? saved.monitorWorkspace.curveViews : [],
+      activeCurveViewId: String(saved.monitorWorkspace.activeCurveViewId || ""),
+      layoutColumns: Math.min(4, Math.max(1, Number(saved.monitorWorkspace.layoutColumns) || 1)),
+      tableViews: Array.isArray(saved.monitorWorkspace.tableViews) ? saved.monitorWorkspace.tableViews : [],
+      activeTableViewId: String(saved.monitorWorkspace.activeTableViewId || ""),
+      tableSearch: String(saved.monitorWorkspace.tableSearch || ""),
+      tableSearchHistory: Array.isArray(saved.monitorWorkspace.tableSearchHistory)
+        ? saved.monitorWorkspace.tableSearchHistory
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+            .slice(0, 8)
+        : [],
+    };
+  }
   if (saved.telemetry && typeof saved.telemetry === "object") {
     state.telemetry = {
       columns: saved.telemetry.columns || {},

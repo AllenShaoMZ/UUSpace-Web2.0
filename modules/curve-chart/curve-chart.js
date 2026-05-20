@@ -1,14 +1,28 @@
 /** @typedef {{ time: number, value: number, seed?: boolean }} CurveSample */
 
+/** 相邻两点时间差超过该阈值时插入断点，避免 SSE 断流后折线直连 */
+export const CURVE_LINE_GAP_BREAK_MS = 5 * 60 * 1000;
+
 /**
- * 绘图用数据：去掉占位种子点，按时间升序，避免与实时点乱序连线出现竖线。
+ * 绘图用数据：去掉占位种子点，按时间升序；大时间空档插入 null 断线。
  * @param {CurveSample[]} samples
+ * @param {{ gapBreakMs?: number }} [options]
  */
-export function prepareCurveSeriesData(samples) {
-  return (samples || [])
+export function prepareCurveSeriesData(samples, options = {}) {
+  const gapMs = options.gapBreakMs ?? CURVE_LINE_GAP_BREAK_MS;
+  const points = (samples || [])
     .filter((s) => s && !s.seed && Number.isFinite(s.time) && Number.isFinite(s.value))
-    .sort((a, b) => a.time - b.time)
-    .map((s) => [s.time, s.value]);
+    .sort((a, b) => a.time - b.time);
+  const data = [];
+  let prevTime = null;
+  for (const s of points) {
+    if (prevTime != null && s.time - prevTime > gapMs) {
+      data.push([prevTime + 1, null]);
+    }
+    data.push([s.time, s.value]);
+    prevTime = s.time;
+  }
+  return data;
 }
 
 /** 单通道缓冲上限（约 2h @100ms/点，对齐桌面 FifoCapacity） */
@@ -41,12 +55,13 @@ export function normalizeCurveWindowMs(ms) {
  */
 export function resolveCurveMaxPoints(windowMs) {
   const wm = normalizeCurveWindowMs(windowMs);
+  if (wm >= CURVE_MAX_AGE_MS - 1000) return 86_400;
   const estimated = Math.ceil(wm / 100);
   return Math.min(CURVE_MAX_POINTS, Math.max(1800, estimated));
 }
 
 /**
- * 时间均匀抽稀，保留首尾点，避免超长窗撑爆渲染。
+ * 按索引均匀抽稀（兼容旧逻辑 / 测试）。
  * @param {CurveSample[]} buffer
  * @param {number} maxPoints
  */
@@ -68,10 +83,74 @@ export function decimateCurveBuffer(buffer, maxPoints) {
   result.push(sorted[sorted.length - 1]);
   return result;
 }
+
+/**
+ * 按时间轴分桶抽稀：每桶保留 min/max（尖峰不丢），适配 24h 长窗。
+ * @param {CurveSample[]} buffer
+ * @param {number} maxPoints
+ */
+export function decimateCurveBufferByTime(buffer, maxPoints) {
+  const sorted = (buffer || [])
+    .filter((p) => p && Number.isFinite(p.time) && Number.isFinite(p.value))
+    .sort((a, b) => a.time - b.time);
+  if (sorted.length <= maxPoints) return sorted;
+  if (maxPoints < 2) return sorted.slice(-1);
+
+  const t0 = sorted[0].time;
+  const t1 = sorted[sorted.length - 1].time;
+  const span = Math.max(t1 - t0, 1);
+  const bucketCount = maxPoints;
+  const bucketSize = span / bucketCount;
+  const buckets = Array.from({ length: bucketCount }, () => []);
+
+  for (const p of sorted) {
+    let idx = Math.floor((p.time - t0) / bucketSize);
+    if (idx >= bucketCount) idx = bucketCount - 1;
+    buckets[idx].push(p);
+  }
+
+  const result = [];
+  for (const inBucket of buckets) {
+    if (!inBucket.length) continue;
+    if (inBucket.length === 1) {
+      result.push(inBucket[0]);
+      continue;
+    }
+    let min = inBucket[0];
+    let max = inBucket[0];
+    for (const p of inBucket) {
+      if (p.value < min.value) min = p;
+      if (p.value > max.value) max = p;
+    }
+    if (min.time <= max.time) {
+      result.push(min);
+      if (max !== min) result.push(max);
+    } else {
+      result.push(max);
+      result.push(min);
+    }
+  }
+
+  const deduped = [];
+  let lastTime = -Infinity;
+  for (const p of result.sort((a, b) => a.time - b.time)) {
+    if (p.time === lastTime) continue;
+    deduped.push(p);
+    lastTime = p.time;
+  }
+  if (deduped.length && deduped[0].time !== sorted[0].time) deduped.unshift(sorted[0]);
+  if (deduped.length && deduped.at(-1).time !== sorted.at(-1).time) deduped.push(sorted.at(-1));
+  if (deduped.length <= maxPoints) return deduped;
+  return decimateCurveBuffer(deduped, maxPoints);
+}
 /** 实时刷新间隔（约 20Hz），与 UDP 入站合并后仍尽量逐点可见 */
 export const CURVE_FLUSH_INTERVAL_MS = 50;
 /** 与页面 panel 融合，不用独立纯黑底 */
 export const CURVE_BG = "transparent";
+/** X 轴右端留白（相对显示窗比例），最新点不贴边，便于观察实时绘制 */
+export const CURVE_TIME_AXIS_RIGHT_PAD_RATIO = 0.06;
+/** 右留白下限 30s */
+export const CURVE_TIME_AXIS_RIGHT_PAD_MIN_MS = 30_000;
 
 /**
  * Trim timestamped curve buffer: cap point count and drop samples older than maxAge.
@@ -85,7 +164,7 @@ export function trimCurveBuffer(buffer, options = {}) {
   const maxAgeMs = options.maxAgeMs ?? CURVE_MAX_AGE_MS;
   const minTime = now - maxAgeMs;
   let next = (buffer || []).filter((point) => point && Number.isFinite(point.time) && point.time >= minTime);
-  if (next.length > maxPoints) next = decimateCurveBuffer(next, maxPoints);
+  if (next.length > maxPoints) next = decimateCurveBufferByTime(next, maxPoints);
   return next;
 }
 
@@ -127,11 +206,14 @@ export function appendCurveSampleCoalesced(buffer, sample, options = {}) {
  * @returns {string}
  */
 /**
- * 时间轴范围：数据不足 60s 时跟随实际数据，避免左侧大块空白。
- * @param {Array<{ samples?: CurveSample[] }>} series
- * @param {number} now
+ * 时间轴右端留白（毫秒）：最新采样点右侧留出空带，体现「实时向前绘制」。
  * @param {number} windowMs
  */
+export function computeCurveTimeAxisRightPad(windowMs = CURVE_WINDOW_MS) {
+  const wm = normalizeCurveWindowMs(windowMs);
+  return Math.max(Math.round(wm * CURVE_TIME_AXIS_RIGHT_PAD_RATIO), CURVE_TIME_AXIS_RIGHT_PAD_MIN_MS);
+}
+
 /** 时间轴右端：取「当前时刻」与最新采样时刻的较大值，避免数据落在可视窗外 */
 export function resolveCurveAxisNow(series, fallbackNow = Date.now()) {
   const times = (series || [])
@@ -215,18 +297,30 @@ export function computeCurveYAxis(series, xMin, xMax) {
   return { min: yMin - pad, max: yMax + pad };
 }
 
+/**
+ * X 轴范围：右端固定留白；历史不足一窗时左端贴最早数据（避免 2h 窗下左侧大块空白）。
+ * @param {Array<{ samples?: CurveSample[] }>} series
+ * @param {number} now
+ * @param {number} windowMs
+ */
 export function computeCurveTimeAxis(series, now, windowMs = CURVE_WINDOW_MS) {
+  const wm = normalizeCurveWindowMs(windowMs);
+  const rightPad = computeCurveTimeAxisRightPad(wm);
+  const axisMax = now + rightPad;
   const times = (series || [])
     .flatMap((item) => (item.samples || []).map((s) => s.time))
     .filter((t) => Number.isFinite(t));
-  const axisMax = now;
   if (!times.length) {
-    return { min: now - windowMs, max: axisMax };
+    return { min: axisMax - wm, max: axisMax };
   }
   const dataMin = Math.min(...times);
-  const span = Math.max(axisMax - dataMin, 1000);
-  const displaySpan = Math.min(windowMs, Math.max(span * 1.08, 1000));
-  return { min: Math.max(0, axisMax - displaySpan), max: axisMax };
+  const span = Math.max(now - dataMin, 1000);
+  if (span >= wm * 0.92) {
+    return { min: axisMax - wm, max: axisMax };
+  }
+  const displaySpan = Math.min(wm, Math.max(span * 1.08, 1000));
+  const leftPad = displaySpan * 0.04;
+  return { min: Math.max(0, dataMin - leftPad), max: axisMax };
 }
 
 /**

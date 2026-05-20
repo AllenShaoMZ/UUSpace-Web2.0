@@ -19,6 +19,8 @@
 | **UI-09** | 主 Agent | 曲线空白修复 + 表格跨 Sheet 搜索勾选 | `app.js`、`curve-chart.js` | ✅ 已完成 | 种子点/时间轴；`tableSearchPickPanel` |
 | **M2-P0** | 主 Agent | 曲线形态贴近桌面（协议时间 + 纯折线） | `app.js`、`curve-chart.js` | ✅ 已完成 | `syncPacketValues` 用 `packet.time`；去 `areaStyle`；同刻合并 |
 | **UI-01** | 主 Agent | 曲线默认 7200s + 可配置显示时长 | `curve-chart.js`、`app.js`、`user-settings.js` | ✅ 已完成 | 默认 2h；1分/10分/1h/2h/24h；缓冲 24h、72000 点抽稀 |
+| **UI-10** | 主 Agent | 曲线右侧留白 + 综测工作台同屏 | `curve-chart.js`、`app.js`、`styles.css` | ✅ 已完成 | X 轴右端 6% 留白；`monitor` 上表下曲线 |
+| **UI-11** | 主 Agent | 综测工作台极简工具栏 | `app.js`、`styles.css` | ✅ 已完成 | 仅保留添加表格/曲线、搜索、分列、显示时长 |
 
 > 主 Agent 统筹：两项同批合并落地，避免 `app.js` / `styles.css` 冲突。
 
@@ -36,6 +38,7 @@
 ### 待办
 
 - [x] **UI-01** 曲线默认视窗 7200s、缓冲最大 24h（含抽稀策略）；工具栏「显示时长」可配置
+- [x] **UI-10** 曲线 X 轴右侧留白（实时绘制感）；新增「综测工作台」上表下曲线同屏
 - [x] **UI-02** 表格全局搜索：搜索框下方结果列表 + 跨 Sheet 勾选（方案 A）
 
 ## 验收

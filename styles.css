@@ -610,6 +610,272 @@ button {
   min-height: 560px;
 }
 
+/* 综测工作台：极简工具栏 + 上表下曲线 */
+.view.monitor-view {
+  height: calc(100vh - 52px - 42px - 82px - 28px);
+  min-height: 560px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 1fr;
+  gap: 6px;
+  overflow: hidden;
+  padding: 0 4px 4px;
+}
+
+.view.monitor-view.layout-cols-1 {
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 1fr;
+}
+
+.view.monitor-view.layout-cols-2,
+.view.monitor-view.layout-cols-3,
+.view.monitor-view.layout-cols-4 {
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.view.monitor-view.layout-cols-3,
+.view.monitor-view.layout-cols-4 {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.view.monitor-view .monitor-toolbar {
+  grid-column: 1 / -1;
+}
+
+.view.monitor-view.layout-cols-2 .monitor-pane-table,
+.view.monitor-view.layout-cols-3 .monitor-pane-table,
+.view.monitor-view.layout-cols-4 .monitor-pane-table {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.view.monitor-view.layout-cols-2 .monitor-pane-curve,
+.view.monitor-view.layout-cols-3 .monitor-pane-curve,
+.view.monitor-view.layout-cols-4 .monitor-pane-curve {
+  grid-row: 2;
+  grid-column: 2;
+}
+
+.monitor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 12, 17, 0.45);
+}
+
+.monitor-pane-curve {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.monitor-curve-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  gap: 4px;
+}
+
+.monitor-curve-workbar {
+  flex-shrink: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 12, 17, 0.35);
+}
+
+.monitor-curve-toolbar {
+  flex-wrap: wrap;
+}
+
+.monitor-curve-actions {
+  margin-left: auto;
+}
+
+.monitor-curve-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.monitor-search {
+  flex: 1 1 auto;
+  min-width: 160px;
+  position: relative;
+}
+
+.monitor-search .search-box {
+  width: 100%;
+}
+
+.monitor-search-dropdown {
+  max-height: min(420px, 52vh);
+}
+
+.monitor-search-groups {
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.monitor-search-groups .channel-group h4 {
+  margin: 8px 10px 4px;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.monitor-search-row {
+  padding: 6px 10px;
+}
+
+.monitor-search-dropdown-footer {
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.monitor-table-wrap-full {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.monitor-toolbar-select {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.monitor-pane {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.monitor-pane-table {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 12, 17, 0.32);
+}
+
+.monitor-table-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 8px 0;
+  flex-wrap: wrap;
+}
+
+.monitor-table-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.monitor-table-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  padding: 16px;
+}
+
+.monitor-sheet-add-block {
+  padding: 8px 0 10px;
+}
+
+.monitor-sheet-add-block .primary-button {
+  width: 100%;
+}
+
+.monitor-table-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.monitor-data-grid {
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0;
+}
+
+.monitor-data-grid:has(.monitor-wave-rail.open) {
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+}
+
+.monitor-wave-rail {
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+
+.monitor-wave-rail.collapsed {
+  display: none;
+}
+
+.monitor-wave-rail h3 {
+  display: none;
+}
+
+.monitor-table-wrap {
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+}
+
+.monitor-table-wrap .table-scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.monitor-pane-curve {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 12, 17, 0.32);
+  min-height: 0;
+}
+
+.monitor-curve-stage {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.monitor-curve-stage .curve-page-grid {
+  height: 100%;
+  min-height: 0;
+}
+
+.monitor-curve-stage .curve-chart-panel {
+  min-height: 0;
+}
+
+.monitor-curve-stage .curve-chart-host {
+  min-height: 120px;
+}
+
 .view-surface {
   overflow: hidden;
 }

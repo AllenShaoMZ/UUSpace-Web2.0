@@ -7,8 +7,11 @@ import {
   appendCurveSampleCoalesced,
   buildCurveOption,
   computeCurveTimeAxis,
+  computeCurveTimeAxisRightPad,
   computeCurveYAxis,
+  CURVE_LINE_GAP_BREAK_MS,
   decimateCurveBuffer,
+  decimateCurveBufferByTime,
   normalizeCurveWindowMs,
   resolveCurveAxisNow,
   resolveCurveMaxPoints,
@@ -82,25 +85,40 @@ describe("resolveCurveAxisNow", () => {
 describe("computeCurveTimeAxis", () => {
   it("shrinks window when data span is shorter than configured window", () => {
     const now = 1_700_000_060_000;
+    const rightPad = computeCurveTimeAxisRightPad(CURVE_WINDOW_MS);
     const { min, max } = computeCurveTimeAxis(
       [{ samples: [{ time: now - 20_000, value: 1 }, { time: now - 5_000, value: 2 }] }],
       now,
       CURVE_WINDOW_MS,
     );
-    expect(max).toBe(now);
+    expect(max).toBe(now + rightPad);
     expect(min).toBeGreaterThan(now - CURVE_WINDOW_MS);
     expect(min).toBeLessThanOrEqual(now - 20_000);
   });
 
   it("uses full 2h window when data span is long enough", () => {
     const now = 1_700_000_060_000;
+    const rightPad = computeCurveTimeAxisRightPad(CURVE_WINDOW_MS);
     const { min, max } = computeCurveTimeAxis(
       [{ samples: [{ time: now - 7_000_000, value: 1 }, { time: now - 1_000, value: 2 }] }],
       now,
       CURVE_WINDOW_MS,
     );
-    expect(max).toBe(now);
-    expect(min).toBe(now - CURVE_WINDOW_MS);
+    expect(max).toBe(now + rightPad);
+    expect(min).toBe(now + rightPad - CURVE_WINDOW_MS);
+  });
+
+  it("adds right padding so latest point is not flush to axis edge", () => {
+    const now = Date.now();
+    const windowMs = 60_000;
+    const rightPad = computeCurveTimeAxisRightPad(windowMs);
+    const { max } = computeCurveTimeAxis(
+      [{ samples: [{ time: now - 10_000, value: 1 }, { time: now - 1_000, value: 2 }] }],
+      now,
+      windowMs,
+    );
+    expect(max).toBeGreaterThan(now);
+    expect(max - now).toBe(rightPad);
   });
 });
 
@@ -118,6 +136,15 @@ describe("curve window config", () => {
   it("resolveCurveMaxPoints scales with window", () => {
     expect(resolveCurveMaxPoints(60_000)).toBe(1800);
     expect(resolveCurveMaxPoints(7_200_000)).toBe(72_000);
+    expect(resolveCurveMaxPoints(CURVE_MAX_AGE_MS)).toBe(86_400);
+  });
+
+  it("decimateCurveBufferByTime preserves time span endpoints", () => {
+    const buffer = Array.from({ length: 200 }, (_, i) => ({ time: i * 1000, value: Math.sin(i) }));
+    const out = decimateCurveBufferByTime(buffer, 20);
+    expect(out.length).toBeLessThanOrEqual(40);
+    expect(out[0].time).toBe(0);
+    expect(out.at(-1).time).toBe(199_000);
   });
 
   it("decimateCurveBuffer keeps endpoints", () => {
@@ -186,6 +213,20 @@ describe("prepareCurveSeriesData", () => {
       [200, 3],
     ]);
   });
+
+  it("inserts null break when gap exceeds threshold", () => {
+    const gap = CURVE_LINE_GAP_BREAK_MS;
+    const data = prepareCurveSeriesData(
+      [
+        { time: 0, value: 1 },
+        { time: gap + 10_000, value: 2 },
+      ],
+      { gapBreakMs: gap },
+    );
+    expect(data).toHaveLength(3);
+    expect(data[1][1]).toBeNull();
+    expect(data[2]).toEqual([gap + 10_000, 2]);
+  });
 });
 
 describe("formatCurveSeriesLabel", () => {
@@ -227,8 +268,9 @@ describe("buildCurveOption", () => {
         },
       ],
     });
-    expect(option.xAxis.max).toBe(now);
-    expect(option.xAxis.min).toBe(now - 60_000);
+    const rightPad = computeCurveTimeAxisRightPad(60_000);
+    expect(option.xAxis.max).toBe(now + rightPad);
+    expect(option.xAxis.min).toBe(now + rightPad - 60_000);
     expect(option.series).toHaveLength(2);
     expect(option.series[0].name).toBe("CH-A-通道A");
     expect(option.series[1].name).toBe("CH-B");

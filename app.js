@@ -288,7 +288,7 @@ let curveChartFlushTimer = null;
 let curveChartFlushInterval = null;
 
 const APP_VERSION =
-  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.15";
+  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.17";
 
 function getUserSettingsApi() {
   return window.UUSPACE_USER_SETTINGS || null;
@@ -758,7 +758,7 @@ function renderView() {
 
   $("#stage").innerHTML = renderer ? renderer() : "";
   bindViewActions();
-  requestAnimationFrame(() => bindTabScrollers(stage));
+  requestAnimationFrame(() => bindTabScrollers(document.getElementById("stage")));
 
   if (isCurveSurfaceActive()) {
     requestAnimationFrame(() => {
@@ -1449,8 +1449,13 @@ function bindCurveChartResize(entry) {
     if (w < 2 || h < 2) return;
     entry.chart.resize();
     const chartId = entry.host.getAttribute("data-curve-chart");
-    const view = getActiveCurveView();
-    const chart = (view?.charts || []).find((item) => item.id === chartId);
+    let chart = null;
+    if (monitorApi?.isMonitorViewActive()) {
+      chart = monitorApi.findCurveChartInActiveTab(chartId)?.chart || null;
+    } else {
+      const view = getActiveCurveView();
+      chart = (view?.charts || []).find((item) => item.id === chartId) || null;
+    }
     if (!chart) return;
     const option = buildCurveOptionForChart(chart);
     if (option.legend && entry.legendSelected) {
@@ -1684,10 +1689,15 @@ function createCurveTabPage() {
 function addCurveChartFromSelection(codes) {
   const uniqueCodes = [...new Set((codes || []).filter(Boolean))];
   if (!uniqueCodes.length) return null;
+  if (monitorApi?.isMonitorViewActive()) {
+    const result = monitorApi.addMonitorCurvePanel(uniqueCodes);
+    if (!result) return null;
+    seedCurveBuffersForCodes(uniqueCodes);
+    return { tab: result.view, chart: result.chart };
+  }
   let tab = getActiveCurveView();
   if (!tab) {
-    if (monitorApi?.isMonitorViewActive()) tab = monitorApi.ensureDefaultCurveViewInActiveTab();
-    else tab = createCurveTabPage();
+    tab = createCurveTabPage();
   }
   const chart = {
     id: `chart-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
@@ -1749,6 +1759,9 @@ function getCurveChartApi() {
 
 function getCurveWindowMs() {
   const api = getCurveChartApi();
+  if (monitorApi?.isMonitorViewActive()) {
+    return monitorApi.getMonitorCurveWindowMs();
+  }
   const raw = Number(state.curveWindowMs);
   return api?.normalizeCurveWindowMs ? api.normalizeCurveWindowMs(raw) : raw || 7_200_000;
 }
@@ -1765,7 +1778,12 @@ function getCurveBufferOptions() {
 
 function applyCurveWindowMs(ms) {
   const api = getCurveChartApi();
-  state.curveWindowMs = api?.normalizeCurveWindowMs ? api.normalizeCurveWindowMs(ms) : ms;
+  const normalized = api?.normalizeCurveWindowMs ? api.normalizeCurveWindowMs(ms) : ms;
+  if (monitorApi?.isMonitorViewActive()) {
+    monitorApi.setMonitorCurveWindowMs(normalized);
+  } else {
+    state.curveWindowMs = normalized;
+  }
   const opts = getCurveBufferOptions();
   Object.keys(state.curveBuffers).forEach((code) => {
     const buf = state.curveBuffers[code];
@@ -1843,14 +1861,17 @@ function mountCurveCharts() {
   }
   api.registerMissionCurveTheme?.(echarts, colorForCode);
 
-  const activeView = getActiveCurveView();
   const liveChartIds = new Set();
-  if (activeView) {
-    (activeView.charts || []).forEach((chart) => {
-      liveChartIds.add(chart.id);
-      (chart.codes || []).forEach((code) => ensureCurveBufferHasPoints(code));
-      ensureCurveChartEntry(chart, echarts, api);
-    });
+  const mountChart = (chart) => {
+    liveChartIds.add(chart.id);
+    (chart.codes || []).forEach((code) => ensureCurveBufferHasPoints(code));
+    ensureCurveChartEntry(chart, echarts, api);
+  };
+  if (monitorApi?.isMonitorViewActive()) {
+    monitorApi.forEachCurveChartInActiveTab((chart) => mountChart(chart));
+  } else {
+    const activeView = getActiveCurveView();
+    if (activeView) (activeView.charts || []).forEach(mountChart);
   }
   [...curveChartInstances.keys()].forEach((chartId) => {
     if (!liveChartIds.has(chartId)) disposeCurveChart(chartId);
@@ -2040,9 +2061,7 @@ function flushCurveChartsNow() {
   const echarts = getEchartsLib();
   const api = getCurveChartApi();
   if (!echarts || !api) return;
-  const activeView = getActiveCurveView();
-  if (!activeView) return;
-  (activeView.charts || []).forEach((chart) => {
+  const flushChart = (chart) => {
     (chart.codes || []).forEach((code) => ensureCurveBufferHasPoints(code));
     const entry = ensureCurveChartEntry(chart, echarts, api);
     if (!entry?.chart) return;
@@ -2054,7 +2073,14 @@ function flushCurveChartsNow() {
     const w = entry.host?.clientWidth || 0;
     const h = entry.host?.clientHeight || 0;
     if (w > 1 && h > 1) entry.chart.resize();
-  });
+  };
+  if (monitorApi?.isMonitorViewActive()) {
+    monitorApi.forEachCurveChartInActiveTab((chart) => flushChart(chart));
+    return;
+  }
+  const activeView = getActiveCurveView();
+  if (!activeView) return;
+  (activeView.charts || []).forEach(flushChart);
 }
 
 function scheduleCurveChartFlush() {
@@ -2491,7 +2517,7 @@ function bindViewActions() {
     ) {
       return; // let checkbox cell change handler manage selection, avoid re-render before change event
     }
-    const btn = ev.target.closest && ev.target.closest("[data-table-view],[data-remove-table-view],[data-add-table],[data-add-monitor-sheet],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-create-monitor-workspace],[data-monitor-workspace-tab],[data-remove-monitor-workspace],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-curve-channel-panel],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
+    const btn = ev.target.closest && ev.target.closest("[data-table-view],[data-remove-table-view],[data-remove-monitor-panel],[data-add-table],[data-add-monitor-sheet],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-create-monitor-workspace],[data-monitor-workspace-tab],[data-remove-monitor-workspace],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-curve-channel-panel],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
     if (!btn) return;
     if (btn.dataset.addMonitorSheet !== undefined) {
       monitorApi?.addMonitorWholeSheet(Number(btn.dataset.addMonitorSheet));
@@ -2525,19 +2551,15 @@ function bindViewActions() {
       schedulePersistWorkspace();
       return renderView();
     }
-    if (btn.dataset.tableView !== undefined) {
+    if (btn.dataset.removeMonitorPanel !== undefined) {
       if (monitorApi?.isMonitorViewActive()) {
-        const tab = monitorApi.getActiveWorkspaceTab();
-        if (tab) tab.activeTableViewId = btn.dataset.tableView;
-        const view = monitorApi.getActiveMonitorTableView();
-        if (view) {
-          state.activeSheet = Number(view.sheet);
-          const rows = monitorApi.getMonitorTelemetryRows();
-          if (rows[0]) state.selectedParamCode = rows[0].code;
-        }
-        schedulePersistWorkspace();
+        monitorApi.removeMonitorPanel(btn.dataset.removeMonitorPanel);
+        appendStatusEvent("已删除格子");
         return renderView();
       }
+    }
+    if (btn.dataset.tableView !== undefined) {
+      if (monitorApi?.isMonitorViewActive()) return;
       state.activeTableViewId = btn.dataset.tableView;
       const view = getActiveTableView();
       if (view) state.activeSheet = Number(view.sheet);
@@ -2550,19 +2572,7 @@ function bindViewActions() {
       return renderView();
     }
     if (btn.dataset.removeTableView) {
-      if (monitorApi?.isMonitorViewActive()) {
-        const removeId = btn.dataset.removeTableView;
-        const tab = monitorApi.getActiveWorkspaceTab();
-        if (tab) {
-          tab.tableViews = (tab.tableViews || []).filter((view) => view.id !== removeId);
-          if (tab.activeTableViewId === removeId) {
-            tab.activeTableViewId = tab.tableViews[0]?.id || "";
-          }
-        }
-        schedulePersistWorkspace();
-        appendStatusEvent("已删除表格");
-        return renderView();
-      }
+      if (monitorApi?.isMonitorViewActive()) return;
       const removeId = btn.dataset.removeTableView;
       state.tableViews = state.tableViews.filter((view) => view.builtin || view.id !== removeId);
       state.activeTableViewId = builtinTableId(state.activeSheet);
@@ -2575,7 +2585,7 @@ function bindViewActions() {
     if (btn.dataset.addTable !== undefined) {
       if (monitorApi?.isMonitorViewActive()) {
         monitorApi.handleMonitorAddTable();
-        return;
+        return renderView();
       }
       const rows = getSelectedWaveRows();
       if (!rows.length) return appendStatusEvent("请先选择波道", "勾选表格左侧的波道后再添加表格");
@@ -2950,7 +2960,12 @@ function bindViewActions() {
       applyCurveLayoutColumns(Number(tgt.value));
       return;
     }
+    if (tgt.matches && tgt.matches("[data-monitor-curve-window-select]")) {
+      applyCurveWindowMs(Number(tgt.value));
+      return;
+    }
     if (tgt.matches && tgt.matches("[data-curve-window-select]")) {
+      if (monitorApi?.isMonitorViewActive()) return;
       applyCurveWindowMs(Number(tgt.value));
       return;
     }

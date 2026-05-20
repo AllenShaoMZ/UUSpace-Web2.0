@@ -64,8 +64,11 @@ describe("user-settings", () => {
     expect(loaded.dockCollapsed).toBe(true);
     expect(loaded.dataFilter).toBe("告警");
     expect(loaded.monitorWorkspace.tabs).toHaveLength(1);
-    expect(loaded.monitorWorkspace.tabs[0].tableViews[0].codes).toEqual(["X"]);
-    expect(loaded.monitorWorkspace.tabs[0].curveViews[0].charts[0].codes).toEqual(["X"]);
+    const panels = loaded.monitorWorkspace.tabs[0].panels;
+    const tablePanel = panels.find((p) => p.kind === "table");
+    const curvePanel = panels.find((p) => p.kind === "curve");
+    expect(tablePanel.codes).toEqual(["X"]);
+    expect(curvePanel.charts[0].codes).toEqual(["X"]);
     const next = {
       tableViews: [],
       activeTableViewId: "",

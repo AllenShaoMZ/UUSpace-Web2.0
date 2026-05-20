@@ -1,44 +1,121 @@
 /**
- * 综测工作台：独立表格/曲线工作区、搜索下拉勾选、与遥测页状态隔离。
- * 由 app.js 在运行时注入依赖后调用。
+ * 综测工作台：工作区 Tab（整页：表格 + 曲线 + 分列）独立持久化。
  */
+
+function defaultWorkspaceTab(name = "Tab页面 1") {
+  return {
+    id: `mws-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+    name,
+    layoutColumns: 1,
+    tableViews: [],
+    activeTableViewId: "",
+    curveViews: [],
+    activeCurveViewId: "",
+    tableSearch: "",
+  };
+}
+
+/** 规范化/迁移综测工作区快照（含旧版扁平结构） */
+export function normalizeMonitorWorkspaceSnapshot(ws) {
+  if (!ws || typeof ws !== "object") {
+    return { tabs: [defaultWorkspaceTab()], activeTabId: "", tableSearchHistory: [] };
+  }
+  if (Array.isArray(ws.tabs) && ws.tabs.length) {
+    const normalized = {
+      tabs: ws.tabs.map((tab) => ({
+        id: String(tab.id || `mws-${Date.now()}`),
+        name: String(tab.name || "Tab页面"),
+        layoutColumns: Math.min(4, Math.max(1, Number(tab.layoutColumns) || 1)),
+        tableViews: Array.isArray(tab.tableViews) ? tab.tableViews : [],
+        activeTableViewId: String(tab.activeTableViewId || ""),
+        curveViews: Array.isArray(tab.curveViews) ? tab.curveViews : [],
+        activeCurveViewId: String(tab.activeCurveViewId || ""),
+        tableSearch: String(tab.tableSearch || ""),
+      })),
+      activeTabId: String(ws.activeTabId || ""),
+      tableSearchHistory: Array.isArray(ws.tableSearchHistory) ? ws.tableSearchHistory : [],
+    };
+    if (!normalized.activeTabId || !normalized.tabs.some((tab) => tab.id === normalized.activeTabId)) {
+      normalized.activeTabId = normalized.tabs[0].id;
+    }
+    return normalized;
+  }
+  const legacyTab = defaultWorkspaceTab("Tab页面 1");
+  legacyTab.layoutColumns = Math.min(4, Math.max(1, Number(ws.layoutColumns) || 1));
+  legacyTab.tableViews = Array.isArray(ws.tableViews) ? ws.tableViews : [];
+  legacyTab.activeTableViewId = String(ws.activeTableViewId || "");
+  legacyTab.curveViews = Array.isArray(ws.curveViews) ? ws.curveViews : [];
+  legacyTab.activeCurveViewId = String(ws.activeCurveViewId || "");
+  legacyTab.tableSearch = String(ws.tableSearch || "");
+  return {
+    tabs: [legacyTab],
+    activeTabId: legacyTab.id,
+    tableSearchHistory: Array.isArray(ws.tableSearchHistory) ? ws.tableSearchHistory : [],
+  };
+}
+
 export function createMonitorWorkspaceApi(deps) {
   const {
     state,
+    protocolRules,
     escapeAttr,
     renderTabScrollerHtml,
     renderParamValueCell,
     renderActiveCurvePage,
+    getActiveCurveView,
     getCurveChartApi,
     getCurveWindowMs,
     getSheetStat,
     getTelemetryRowsForSheet,
-    getAllTelemetryRows,
     getSelectedWaveRows,
     buildTableSearchGroups,
     normalizeCurveView,
     schedulePersistWorkspace,
     appendStatusEvent,
     renderView,
+    normalizeTableSearchHistory,
+    getTelemetryDisplayValue,
+    updateValueCell,
+    updateCellText,
+    formatRawHex,
+    curveChartInstances,
   } = deps;
 
   function ensureMonitorWorkspace() {
-    if (!state.monitorWorkspace) {
-      state.monitorWorkspace = {
-        curveViews: [],
-        activeCurveViewId: "",
-        layoutColumns: 1,
-        tableViews: [],
-        activeTableViewId: "",
-        tableSearch: "",
-        tableSearchHistory: [],
-      };
+    state.monitorWorkspace = normalizeMonitorWorkspaceSnapshot(state.monitorWorkspace);
+    const ws = state.monitorWorkspace;
+    if (!ws.tabs.length) {
+      const tab = defaultWorkspaceTab();
+      ws.tabs = [tab];
+      ws.activeTabId = tab.id;
     }
-    if (!Array.isArray(state.monitorWorkspace.tableViews)) state.monitorWorkspace.tableViews = [];
-    if (!Array.isArray(state.monitorWorkspace.tableSearchHistory)) {
-      state.monitorWorkspace.tableSearchHistory = [];
+    ws.tabs.forEach((tab) => {
+      if (!Array.isArray(tab.tableViews)) tab.tableViews = [];
+      if (!Array.isArray(tab.curveViews)) tab.curveViews = [];
+      tab.layoutColumns = Math.min(4, Math.max(1, Number(tab.layoutColumns) || 1));
+    });
+    if (!ws.activeTabId || !ws.tabs.some((tab) => tab.id === ws.activeTabId)) {
+      ws.activeTabId = ws.tabs[0].id;
     }
-    return state.monitorWorkspace;
+    return ws;
+  }
+
+  function getWorkspaceTabs() {
+    return ensureMonitorWorkspace().tabs;
+  }
+
+  function getActiveWorkspaceTab() {
+    const ws = ensureMonitorWorkspace();
+    return ws.tabs.find((tab) => tab.id === ws.activeTabId) || ws.tabs[0] || null;
+  }
+
+  function getActiveWorkspaceTabId() {
+    return ensureMonitorWorkspace().activeTabId || "";
+  }
+
+  function setActiveWorkspaceTabId(id) {
+    const ws = ensureMonitorWorkspace();
+    if (ws.tabs.some((tab) => tab.id === id)) ws.activeTabId = id;
   }
 
   function isMonitorViewActive() {
@@ -46,14 +123,18 @@ export function createMonitorWorkspaceApi(deps) {
   }
 
   function getWorkspaceTableSearch() {
-    if (isMonitorViewActive()) return ensureMonitorWorkspace().tableSearch || "";
-    return state.tableSearch || "";
+    if (!isMonitorViewActive()) return state.tableSearch || "";
+    return getActiveWorkspaceTab()?.tableSearch || "";
   }
 
   function setWorkspaceTableSearch(text) {
     const value = String(text ?? "");
-    if (isMonitorViewActive()) ensureMonitorWorkspace().tableSearch = value;
-    else state.tableSearch = value;
+    if (isMonitorViewActive()) {
+      const tab = getActiveWorkspaceTab();
+      if (tab) tab.tableSearch = value;
+    } else {
+      state.tableSearch = value;
+    }
   }
 
   function getWorkspaceTableSearchHistory() {
@@ -67,12 +148,14 @@ export function createMonitorWorkspaceApi(deps) {
   }
 
   function getMonitorTableViews() {
-    return ensureMonitorWorkspace().tableViews || [];
+    return getActiveWorkspaceTab()?.tableViews || [];
   }
 
   function getActiveMonitorTableView() {
-    const views = getMonitorTableViews();
-    const activeId = ensureMonitorWorkspace().activeTableViewId || "";
+    const tab = getActiveWorkspaceTab();
+    if (!tab) return null;
+    const views = tab.tableViews || [];
+    const activeId = tab.activeTableViewId || "";
     return views.find((view) => view.id === activeId) || views[0] || null;
   }
 
@@ -89,7 +172,7 @@ export function createMonitorWorkspaceApi(deps) {
   function parseMonitorSheetKeyword(keyword) {
     const text = String(keyword || "").trim();
     if (!text) return null;
-    const sheets = deps.protocolRules.map((rule) => Number(rule.sheet));
+    const sheets = protocolRules.map((rule) => Number(rule.sheet));
     if (/^\d+$/.test(text)) {
       const n = Number(text);
       if (sheets.includes(n)) return n;
@@ -115,18 +198,19 @@ export function createMonitorWorkspaceApi(deps) {
   }
 
   function addMonitorTableView({ name, sheet, codes, wholeSheet }) {
-    const ws = ensureMonitorWorkspace();
+    const tab = getActiveWorkspaceTab();
+    if (!tab) return null;
     const id = `mtable-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
     const view = {
       id,
-      name: name || `表格${ws.tableViews.length + 1}`,
+      name: name || `表格${tab.tableViews.length + 1}`,
       sheet: Number(sheet),
       codes: wholeSheet ? [] : [...new Set((codes || []).filter(Boolean))],
       wholeSheet: !!wholeSheet,
     };
-    ws.tableViews = [...ws.tableViews, view];
-    ws.activeTableViewId = id;
-    ws.tableSearch = "";
+    tab.tableViews = [...tab.tableViews, view];
+    tab.activeTableViewId = id;
+    tab.tableSearch = "";
     state.selectedWaveCodes.clear();
     schedulePersistWorkspace();
     return view;
@@ -171,22 +255,79 @@ export function createMonitorWorkspaceApi(deps) {
   }
 
   function getMonitorLayoutColumns() {
-    return Math.min(4, Math.max(1, Number(ensureMonitorWorkspace().layoutColumns) || 1));
+    const tab = getActiveWorkspaceTab();
+    return Math.min(4, Math.max(1, Number(tab?.layoutColumns) || 1));
   }
 
   function applyMonitorWorkspaceLayout(columns) {
-    const ws = ensureMonitorWorkspace();
-    ws.layoutColumns = Math.min(4, Math.max(1, Number(columns) || 1));
+    const tab = getActiveWorkspaceTab();
+    if (!tab) return;
+    tab.layoutColumns = Math.min(4, Math.max(1, Number(columns) || 1));
     const root = document.querySelector(".monitor-view");
     if (root) {
-      root.className = `view monitor-view layout-cols-${ws.layoutColumns}`;
+      root.className = `view monitor-view layout-cols-${tab.layoutColumns}`;
       requestAnimationFrame(() => {
-        deps.curveChartInstances.forEach((entry) => entry.chart?.resize());
+        curveChartInstances.forEach((entry) => entry.chart?.resize());
       });
     } else {
       renderView();
     }
     schedulePersistWorkspace();
+  }
+
+  function createWorkspaceTab({ name } = {}) {
+    const ws = ensureMonitorWorkspace();
+    const tab = defaultWorkspaceTab(name || `Tab页面 ${ws.tabs.length + 1}`);
+    ws.tabs = [...ws.tabs, tab];
+    ws.activeTabId = tab.id;
+    schedulePersistWorkspace();
+    return tab;
+  }
+
+  function switchWorkspaceTab(tabId) {
+    if (!tabId || getActiveWorkspaceTabId() === tabId) return;
+    setActiveWorkspaceTabId(tabId);
+    schedulePersistWorkspace();
+    deps.disposeAllCurveCharts?.();
+    renderView();
+  }
+
+  function removeWorkspaceTab(tabId) {
+    const ws = ensureMonitorWorkspace();
+    const removed = ws.tabs.find((tab) => tab.id === tabId);
+    if (!removed) return;
+    (removed.curveViews || []).forEach((view) => {
+      (view.charts || []).forEach((chart) => deps.disposeCurveChart?.(chart.id));
+    });
+    ws.tabs = ws.tabs.filter((tab) => tab.id !== tabId);
+    if (ws.activeTabId === tabId) {
+      ws.activeTabId = ws.tabs[0]?.id || "";
+    }
+    if (!ws.tabs.length) {
+      const tab = defaultWorkspaceTab();
+      ws.tabs = [tab];
+      ws.activeTabId = tab.id;
+    }
+    schedulePersistWorkspace();
+  }
+
+  function ensureDefaultCurveViewInActiveTab() {
+    const tab = getActiveWorkspaceTab();
+    if (!tab) return null;
+    tab.curveViews = (tab.curveViews || []).map(normalizeCurveView);
+    let view = tab.curveViews.find((item) => item.id === tab.activeCurveViewId) || tab.curveViews[0];
+    if (!view) {
+      view = {
+        id: `mcurve-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+        name: "曲线区",
+        charts: [],
+        layoutColumns: 1,
+      };
+      tab.curveViews = [view];
+      tab.activeCurveViewId = view.id;
+      schedulePersistWorkspace();
+    }
+    return view;
   }
 
   function renderMonitorSearchDropdownHtml() {
@@ -250,6 +391,54 @@ export function createMonitorWorkspaceApi(deps) {
     }, 200);
   }
 
+  function renderMonitorWorkspaceTabsBar() {
+    const tabs = getWorkspaceTabs();
+    const activeId = getActiveWorkspaceTabId();
+    const activeTab = getActiveWorkspaceTab();
+    const plottedCount = [
+      ...new Set(
+        tabs.flatMap((tab) =>
+          (tab.curveViews || []).flatMap((view) =>
+            (normalizeCurveView(view).charts || []).flatMap((chart) => chart.codes || []),
+          ),
+        ),
+      ),
+    ].length;
+    const tabsHtml = tabs.length
+      ? renderTabScrollerHtml(
+          tabs
+            .map(
+              (tab) =>
+                `<button type="button" class="segment ${tab.id === activeId ? "active" : ""}" data-monitor-workspace-tab="${escapeAttr(tab.id)}">${escapeAttr(tab.name)}</button>`,
+            )
+            .join(""),
+          { segmentClass: "monitor-workspace-tabs", ariaLabel: "综测工作区 Tab" },
+        )
+      : "";
+    return `
+    <div class="monitor-workspace-bar">
+      <div class="curve-page-toolbar monitor-workspace-toolbar">
+        <div class="view-title curve-page-toolbar-title">工作区 Tab<small>${tabs.length} 个 · ${plottedCount} 个曲线通道</small></div>
+        <div class="curve-page-tabs-scroll">${tabsHtml}</div>
+        ${
+          activeTab
+            ? `<input class="inline-name-input curve-page-rename" data-rename-monitor-workspace="${escapeAttr(activeTab.id)}" value="${escapeAttr(activeTab.name)}" aria-label="修改工作区 Tab 名称" />`
+            : ""
+        }
+      </div>
+      <div class="header-actions monitor-workspace-actions">
+        <button type="button" class="ghost-button" data-create-monitor-workspace title="新建空白工作区 Tab（含表格区与曲线区）">新建Tab页面</button>
+        ${
+          activeTab && tabs.length > 1
+            ? `<button type="button" class="send-mini" data-remove-monitor-workspace="${escapeAttr(activeTab.id)}">删除本 Tab</button>`
+            : activeTab && tabs.length === 1
+              ? `<button type="button" class="send-mini" data-remove-monitor-workspace="${escapeAttr(activeTab.id)}" title="删除后自动新建空白 Tab">删除本 Tab</button>`
+              : ""
+        }
+      </div>
+    </div>`;
+  }
+
   function renderMonitorToolbar() {
     const monitorLayout = getMonitorLayoutColumns();
     const layoutOptions = Array.from({ length: 4 }, (_, index) => index + 1);
@@ -257,10 +446,10 @@ export function createMonitorWorkspaceApi(deps) {
     const curveWindowMs = getCurveWindowMs();
     const windowOptions = curveApi?.CURVE_WINDOW_OPTIONS || [{ seconds: 7200, label: "2 小时" }];
     return `
+    ${renderMonitorWorkspaceTabsBar()}
     <div class="monitor-toolbar">
       <button type="button" class="ghost-button" data-add-table>添加表格</button>
       <button type="button" class="ghost-button" data-add-curve>添加曲线</button>
-      <button type="button" class="ghost-button" data-create-curve-view title="新建空白 Tab 页面，不添加波道">新建Tab页面</button>
       <button type="button" class="ghost-button" data-clear-curves>清空曲线</button>
       <div class="search-history-wrap monitor-search">
         <input class="search-box" id="monitorParamSearch" value="${escapeAttr(getWorkspaceTableSearch())}" placeholder="搜索参数代号或 Sheet 号（如 0、sheet2）" autocomplete="off" aria-expanded="false" aria-controls="monitorSearchDropdown" />
@@ -268,7 +457,7 @@ export function createMonitorWorkspaceApi(deps) {
       </div>
       <label class="curve-layout-select monitor-toolbar-select">
         分列
-        <select data-monitor-layout-select aria-label="工作区分列">
+        <select data-monitor-layout-select aria-label="当前工作区 Tab 分列（表格与曲线布局）">
           ${layoutOptions
             .map((count) => `<option value="${count}" ${monitorLayout === count ? "selected" : ""}>${count} 列</option>`)
             .join("")}
@@ -298,7 +487,7 @@ export function createMonitorWorkspaceApi(deps) {
     });
     const sheetStat = activeView ? getSheetStat(activeView.sheet) : null;
     const tableBody = !activeView
-      ? `<div class="monitor-table-empty"><div class="empty-hint">工作区暂无表格。在上方搜索框下拉中勾选波道，或输入 Sheet 号后点「添加表格」。</div></div>`
+      ? `<div class="monitor-table-empty"><div class="empty-hint">本工作区 Tab 暂无表格。在上方搜索框勾选波道，或输入 Sheet 号后点「添加表格」。</div></div>`
       : !rows.length
         ? `<div class="monitor-table-empty"><div class="empty-hint">${activeView.wholeSheet ? `Sheet ${activeView.sheet} 整表暂无数据` : "该表格暂无匹配参数"}</div></div>`
         : `<div class="table-scroll auto-hide-scrollbar" aria-label="遥测参数列表">
@@ -357,52 +546,26 @@ export function createMonitorWorkspaceApi(deps) {
   }
 
   function renderMonitorCurveStage() {
-    const curveViews = deps.getCurveViews ? deps.getCurveViews() : [];
-    const activeCurveView = deps.getActiveCurveView();
-    const activeId = deps.getActiveCurveViewId ? deps.getActiveCurveViewId() : "";
-    const plottedCount = [
-      ...new Set(curveViews.flatMap((view) => (view.charts || []).flatMap((chart) => chart.codes || []))),
-    ].length;
-    const tabsHtml = curveViews.length
-      ? renderTabScrollerHtml(
-          curveViews
-            .map(
-              (view) =>
-                `<button type="button" class="segment ${view.id === activeId ? "active" : ""}" data-curve-view="${escapeAttr(view.id)}">${escapeAttr(view.name)}</button>`,
-            )
-            .join(""),
-          { segmentClass: "monitor-curve-tabs", ariaLabel: "综测曲线 Tab 切换" },
-        )
-      : "";
+    const activeCurveView = getActiveCurveView();
+    const plottedInTab = activeCurveView
+      ? (activeCurveView.charts || []).reduce((n, chart) => n + (chart.codes?.length || 0), 0)
+      : 0;
     return `
     <div class="monitor-curve-pane">
-      <div class="monitor-curve-workbar curve-workbar">
-        <div class="curve-page-toolbar monitor-curve-toolbar">
-          <div class="view-title curve-page-toolbar-title">曲线 Tab<small>${curveViews.length} 个 Tab · ${plottedCount} 个通道</small></div>
-          <div class="curve-page-tabs-scroll">${tabsHtml}</div>
-          ${
-            activeCurveView
-              ? `<input class="inline-name-input curve-page-rename" data-rename-curve="${escapeAttr(activeCurveView.id)}" value="${escapeAttr(activeCurveView.name)}" aria-label="修改 Tab 页面标题" />`
-              : ""
-          }
-        </div>
-        <div class="header-actions monitor-curve-actions">
-          ${
-            activeCurveView
-              ? `<button type="button" class="send-mini" data-remove-curve-view="${escapeAttr(activeCurveView.id)}">删除本 Tab</button>`
-              : ""
-          }
-        </div>
+      <div class="monitor-curve-caption">
+        <span>曲线区</span>
+        <small>${plottedInTab ? `${plottedInTab} 个通道` : "勾选波道后点「添加曲线」"}</small>
       </div>
       <div class="monitor-curve-stage curve-page-stage">
         ${
           activeCurveView
             ? renderActiveCurvePage(activeCurveView)
-            : `<article class="view-surface chart-wrap empty-curve-panel"><div class="empty-hint">点「新建Tab页面」建空白页，或在搜索框勾选波道后点「添加曲线」。</div></article>`
+            : `<article class="view-surface chart-wrap empty-curve-panel"><div class="empty-hint">点顶部「新建Tab页面」建空白工作区，或勾选波道后点「添加曲线」。</div></article>`
         }
       </div>
     </div>`;
   }
+
   function renderMonitor() {
     const layoutCols = getMonitorLayoutColumns();
     return `
@@ -421,18 +584,54 @@ export function createMonitorWorkspaceApi(deps) {
     document.querySelectorAll(".monitor-table-wrap tr[data-param-row]").forEach((row) => {
       const live = liveValues[row.dataset.paramRow];
       if (!live) return;
-      const display = deps.getTelemetryDisplayValue(live, row.dataset.paramRow);
-      deps.updateValueCell(row.querySelector("[data-param-value]"), row.dataset.paramRow, display.value);
-      deps.updateCellText(row.querySelector("[data-param-hex]"), deps.formatRawHex(live.raw ?? live.hex));
+      const display = getTelemetryDisplayValue(live, row.dataset.paramRow);
+      updateValueCell(row.querySelector("[data-param-value]"), row.dataset.paramRow, display.value);
+      updateCellText(row.querySelector("[data-param-hex]"), formatRawHex(live.raw ?? live.hex));
     });
   }
 
   function hydrateMonitorWorkspace() {
-    if (!state.monitorWorkspace?.curveViews?.length) state.monitorWorkspace.activeCurveViewId = "";
-    if (!state.monitorWorkspace?.tableViews?.length) state.monitorWorkspace.activeTableViewId = "";
-    state.monitorWorkspace.tableSearchHistory = deps.normalizeTableSearchHistory(
-      state.monitorWorkspace.tableSearchHistory,
-    );
+    ensureMonitorWorkspace();
+    const ws = state.monitorWorkspace;
+    ws.tableSearchHistory = normalizeTableSearchHistory(ws.tableSearchHistory);
+    ws.tabs.forEach((tab) => {
+      if (!tab.curveViews?.length) tab.activeCurveViewId = "";
+      if (!tab.tableViews?.length) tab.activeTableViewId = "";
+      tab.curveViews = (tab.curveViews || []).map(normalizeCurveView);
+    });
+  }
+
+  function getCurveViewsForMonitor() {
+    const tab = getActiveWorkspaceTab();
+    if (!tab) return [];
+    tab.curveViews = (tab.curveViews || []).map(normalizeCurveView);
+    return tab.curveViews;
+  }
+
+  function getActiveCurveViewIdForMonitor() {
+    return getActiveWorkspaceTab()?.activeCurveViewId || "";
+  }
+
+  function setActiveCurveViewIdForMonitor(id) {
+    const tab = getActiveWorkspaceTab();
+    if (tab) tab.activeCurveViewId = id || "";
+  }
+
+  function setCurveViewsForMonitor(views) {
+    const tab = getActiveWorkspaceTab();
+    if (tab) tab.curveViews = views;
+  }
+
+  function getAllMonitorCurveCodes() {
+    return [
+      ...new Set(
+        getWorkspaceTabs().flatMap((tab) =>
+          (tab.curveViews || [])
+            .flatMap((view) => (normalizeCurveView(view).charts || []).flatMap((chart) => chart.codes || []))
+            .filter(Boolean),
+        ),
+      ),
+    ];
   }
 
   return {
@@ -454,26 +653,16 @@ export function createMonitorWorkspaceApi(deps) {
     renderMonitor,
     updateMonitorTableRowsInPlace,
     hydrateMonitorWorkspace,
-    getCurveViewsForMonitor: () => {
-      const ws = ensureMonitorWorkspace();
-      ws.curveViews = (ws.curveViews || []).map(normalizeCurveView);
-      return ws.curveViews;
-    },
-    getActiveCurveViewIdForMonitor: () => ensureMonitorWorkspace().activeCurveViewId || "",
-    setActiveCurveViewIdForMonitor: (id) => {
-      ensureMonitorWorkspace().activeCurveViewId = id || "";
-    },
-    setCurveViewsForMonitor: (views) => {
-      ensureMonitorWorkspace().curveViews = views;
-    },
-    getAllMonitorCurveCodes: () => {
-      return [
-        ...new Set(
-          (ensureMonitorWorkspace().curveViews || [])
-            .flatMap((view) => (normalizeCurveView(view).charts || []).flatMap((chart) => chart.codes || []))
-            .filter(Boolean),
-        ),
-      ];
-    },
+    createWorkspaceTab,
+    switchWorkspaceTab,
+    removeWorkspaceTab,
+    ensureDefaultCurveViewInActiveTab,
+    getWorkspaceTabs,
+    getActiveWorkspaceTab,
+    getCurveViewsForMonitor,
+    getActiveCurveViewIdForMonitor,
+    setActiveCurveViewIdForMonitor,
+    setCurveViewsForMonitor,
+    getAllMonitorCurveCodes,
   };
 }

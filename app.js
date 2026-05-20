@@ -47,12 +47,8 @@ const state = {
   curveViews: [],
   activeCurveViewId: "",
   monitorWorkspace: {
-    curveViews: [],
-    activeCurveViewId: "",
-    layoutColumns: 1,
-    tableViews: [],
-    activeTableViewId: "",
-    tableSearch: "",
+    tabs: [],
+    activeTabId: "",
     tableSearchHistory: [],
   },
   curveWindowMs: 7_200_000,
@@ -292,7 +288,7 @@ let curveChartFlushTimer = null;
 let curveChartFlushInterval = null;
 
 const APP_VERSION =
-  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.13";
+  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.15";
 
 function getUserSettingsApi() {
   return window.UUSPACE_USER_SETTINGS || null;
@@ -509,6 +505,7 @@ function switchView(viewId) {
     state.curveAnimationFrame = null;
   }
   store.set("activeView", viewId);
+  schedulePersistWorkspace();
   if (state.refreshTimer) {
     clearTimeout(state.refreshTimer);
     state.refreshTimer = null;
@@ -543,6 +540,7 @@ function setDockCollapsed(collapsed) {
   const btn = document.getElementById("collapseSummary");
   if (btn) btn.title = state.dockCollapsed ? "展开侧栏" : "隐藏侧栏";
   syncDockRailHandle();
+  schedulePersistWorkspace();
 }
 
 function installMonitorWorkspaceApi() {
@@ -574,6 +572,8 @@ function installMonitorWorkspaceApi() {
     updateCellText,
     formatRawHex,
     curveChartInstances,
+    disposeAllCurveCharts,
+    disposeCurveChart,
   });
 }
 
@@ -722,6 +722,7 @@ function renderDock() {
   document.querySelectorAll("[data-dock-sheet]").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.dockHighlightSheet = Number(btn.dataset.dockSheet);
+      schedulePersistWorkspace();
       document.querySelectorAll("[data-dock-sheet]").forEach((tab) => {
         tab.classList.toggle("active", Number(tab.dataset.dockSheet) === state.dockHighlightSheet);
       });
@@ -1668,6 +1669,9 @@ function getCurveSeries(codes = null) {
 }
 
 function createCurveTabPage() {
+  if (monitorApi?.isMonitorViewActive()) {
+    return monitorApi.createWorkspaceTab();
+  }
   const id = `curve-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   const view = { id, name: `Tab页面 ${getCurveViews().length + 1}`, charts: [], layoutColumns: 1 };
   setCurveViews([...getCurveViews(), view]);
@@ -1681,7 +1685,10 @@ function addCurveChartFromSelection(codes) {
   const uniqueCodes = [...new Set((codes || []).filter(Boolean))];
   if (!uniqueCodes.length) return null;
   let tab = getActiveCurveView();
-  if (!tab) tab = createCurveTabPage();
+  if (!tab) {
+    if (monitorApi?.isMonitorViewActive()) tab = monitorApi.ensureDefaultCurveViewInActiveTab();
+    else tab = createCurveTabPage();
+  }
   const chart = {
     id: `chart-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
     name: `曲线页 ${(tab.charts || []).length + 1}`,
@@ -2484,10 +2491,24 @@ function bindViewActions() {
     ) {
       return; // let checkbox cell change handler manage selection, avoid re-render before change event
     }
-    const btn = ev.target.closest && ev.target.closest("[data-table-view],[data-remove-table-view],[data-add-table],[data-add-monitor-sheet],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-curve-channel-panel],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
+    const btn = ev.target.closest && ev.target.closest("[data-table-view],[data-remove-table-view],[data-add-table],[data-add-monitor-sheet],[data-add-curve],[data-refresh-defs],[data-create-curve-view],[data-create-monitor-workspace],[data-monitor-workspace-tab],[data-remove-monitor-workspace],[data-clear-curves],[data-command-card],[data-send-selected],[data-send],[data-import-commands],[data-command-category],[data-view-shortcut],[data-rule],[data-data-filter],[data-param-row],[data-param-card],[data-remove-channel],[data-remove-curve-code],[data-remove-curve-chart],[data-remove-curve-view],[data-search-history],[data-fav],[data-toggle-wave-drawer],[data-toggle-curve-channel-panel],[data-toggle-connection-config],[data-rename-table],[data-rename-curve],[data-curve-view]");
     if (!btn) return;
     if (btn.dataset.addMonitorSheet !== undefined) {
       monitorApi?.addMonitorWholeSheet(Number(btn.dataset.addMonitorSheet));
+      return renderView();
+    }
+    if (btn.dataset.monitorWorkspaceTab !== undefined) {
+      monitorApi?.switchWorkspaceTab(btn.dataset.monitorWorkspaceTab);
+      return;
+    }
+    if (btn.dataset.createMonitorWorkspace !== undefined) {
+      const tab = monitorApi?.createWorkspaceTab();
+      if (tab) appendStatusEvent("已新建工作区 Tab", tab.name);
+      return renderView();
+    }
+    if (btn.dataset.removeMonitorWorkspace !== undefined) {
+      monitorApi?.removeWorkspaceTab(btn.dataset.removeMonitorWorkspace);
+      appendStatusEvent("已删除工作区 Tab");
       return renderView();
     }
     if (btn.dataset.searchHistory !== undefined) {
@@ -2501,12 +2522,13 @@ function bindViewActions() {
     }
     if (btn.dataset.dataFilter) {
       state.dataFilter = btn.dataset.dataFilter;
+      schedulePersistWorkspace();
       return renderView();
     }
     if (btn.dataset.tableView !== undefined) {
       if (monitorApi?.isMonitorViewActive()) {
-        const ws = state.monitorWorkspace;
-        ws.activeTableViewId = btn.dataset.tableView;
+        const tab = monitorApi.getActiveWorkspaceTab();
+        if (tab) tab.activeTableViewId = btn.dataset.tableView;
         const view = monitorApi.getActiveMonitorTableView();
         if (view) {
           state.activeSheet = Number(view.sheet);
@@ -2530,10 +2552,12 @@ function bindViewActions() {
     if (btn.dataset.removeTableView) {
       if (monitorApi?.isMonitorViewActive()) {
         const removeId = btn.dataset.removeTableView;
-        const ws = state.monitorWorkspace;
-        ws.tableViews = (ws.tableViews || []).filter((view) => view.id !== removeId);
-        if (ws.activeTableViewId === removeId) {
-          ws.activeTableViewId = ws.tableViews[0]?.id || "";
+        const tab = monitorApi.getActiveWorkspaceTab();
+        if (tab) {
+          tab.tableViews = (tab.tableViews || []).filter((view) => view.id !== removeId);
+          if (tab.activeTableViewId === removeId) {
+            tab.activeTableViewId = tab.tableViews[0]?.id || "";
+          }
         }
         schedulePersistWorkspace();
         appendStatusEvent("已删除表格");
@@ -2613,7 +2637,10 @@ function bindViewActions() {
     }
     if (btn.dataset.createCurveView !== undefined) {
       const view = createCurveTabPage();
-      appendStatusEvent("已新建 Tab 页面", view.name);
+      appendStatusEvent(
+        monitorApi?.isMonitorViewActive() ? "已新建工作区 Tab" : "已新建 Tab 页面",
+        view?.name || "",
+      );
       return renderView();
     }
     if (btn.dataset.clearCurves !== undefined) {
@@ -2625,6 +2652,7 @@ function bindViewActions() {
     }
     if (btn.dataset.commandCard) {
       state.selectedCommandId = btn.dataset.commandCard;
+      schedulePersistWorkspace();
       return renderView();
     }
     if (btn.dataset.paramRow || btn.dataset.paramCard) {
@@ -2657,6 +2685,7 @@ function bindViewActions() {
       return renderView();
     }
     if (btn.dataset.removeCurveView) {
+      if (monitorApi?.isMonitorViewActive()) return;
       const removedId = btn.dataset.removeCurveView;
       disposeCurveChartsForView(removedId);
       setCurveViews(getCurveViews().filter((view) => view.id !== removedId));
@@ -2669,6 +2698,7 @@ function bindViewActions() {
       return renderView();
     }
     if (btn.dataset.curveView) {
+      if (monitorApi?.isMonitorViewActive()) return;
       switchCurveView(btn.dataset.curveView);
       return;
     }
@@ -2679,6 +2709,7 @@ function bindViewActions() {
       document.querySelectorAll("[data-toggle-curve-channel-panel]").forEach((el) => {
         el.textContent = state.curveChannelPanelCollapsed ? "显示通道栏" : "隐藏通道栏";
       });
+      schedulePersistWorkspace();
       return;
     }
     if (btn.dataset.renameTable !== undefined) return;
@@ -2688,14 +2719,17 @@ function bindViewActions() {
       const code = btn.dataset.fav;
       if (state.favorites.has(code)) state.favorites.delete(code);
       else state.favorites.add(code);
+      schedulePersistWorkspace();
       return renderView();
     }
     if (btn.dataset.toggleWaveDrawer !== undefined) {
       state.waveDrawerOpen = !state.waveDrawerOpen;
+      schedulePersistWorkspace();
       return renderView();
     }
     if (btn.dataset.toggleConnectionConfig !== undefined) {
       state.connectionConfigOpen = !state.connectionConfigOpen;
+      schedulePersistWorkspace();
       return renderView();
     }
     if (btn.dataset.sendSelected !== undefined) {
@@ -2723,6 +2757,7 @@ function bindViewActions() {
     }
     if (btn.dataset.commandCategory) {
       state.commandCategory = btn.dataset.commandCategory;
+      schedulePersistWorkspace();
       return renderView();
     }
   });
@@ -2950,7 +2985,22 @@ function bindViewActions() {
       }
       return;
     }
+    if (tgt && tgt.dataset && tgt.dataset.renameMonitorWorkspace !== undefined) {
+      const tabId = tgt.dataset.renameMonitorWorkspace;
+      const tab = monitorApi?.getActiveWorkspaceTab();
+      if (tab && tab.id === tabId) {
+        const tabs = monitorApi.getWorkspaceTabs();
+        tab.name = tgt.value.trim() || `Tab页面 ${tabs.indexOf(tab) + 1}`;
+        clearTimeout(state.renameDebounceTimers[`mws-${tab.id}`]);
+        state.renameDebounceTimers[`mws-${tab.id}`] = setTimeout(() => schedulePersistWorkspace(), 300);
+        document.querySelectorAll(`[data-monitor-workspace-tab="${tab.id}"]`).forEach((el) => {
+          el.textContent = tab.name;
+        });
+      }
+      return;
+    }
     if (tgt && tgt.dataset && tgt.dataset.renameCurve !== undefined) {
+      if (monitorApi?.isMonitorViewActive()) return;
       const view = getCurveViews().find((item) => item.id === tgt.dataset.renameCurve);
       if (view) {
         view.name = tgt.value.trim() || `Tab页面 ${getCurveViews().indexOf(view) + 1}`;
@@ -3305,7 +3355,7 @@ function createLiveFilter(inputId, rowSelector, stateKey, renderDelay = 300) {
     const value = input.value;
     state.searchDebounceTimers[inputId] = setTimeout(() => {
       state[stateKey] = value;
-      if (stateKey === "tableSearch") schedulePersistWorkspace();
+      if (stateKey === "tableSearch" || stateKey === "commandFilter") schedulePersistWorkspace();
       renderView();
       restoreInputFocus(inputId, value);
     }, renderDelay);

@@ -405,8 +405,8 @@ export function buildCurveOption(params) {
       ? {
           type: "scroll",
           top: 8,
-          right: 12,
-          left: "auto",
+          left: 8,
+          right: "auto",
           orient: "horizontal",
           selectedMode: true,
           animation: false,

@@ -356,6 +356,15 @@ export function createMonitorWorkspaceApi(deps) {
     schedulePersistWorkspace();
   }
 
+  function renameMonitorPanel(panelId, newName) {
+    const tab = getActiveWorkspaceTab();
+    if (!tab) return;
+    const panel = (tab.panels || []).find((p) => p.id === panelId);
+    if (!panel) return;
+    panel.name = newName.trim() || panel.name;
+    schedulePersistWorkspace();
+  }
+
   function getMonitorCurveWindowMs() {
     const tab = getActiveWorkspaceTab();
     const raw = Number(tab?.curveWindowMs) || 0;
@@ -532,9 +541,14 @@ export function createMonitorWorkspaceApi(deps) {
     const focused =
       document.activeElement === input ||
       (document.activeElement && panel.contains(document.activeElement));
+    // Preserve scroll position across innerHTML replace
+    const scrollEl = panel.querySelector(".monitor-search-groups");
+    const savedScrollTop = scrollEl ? scrollEl.scrollTop : 0;
     panel.innerHTML = renderMonitorSearchDropdownHtml();
     panel.classList.toggle("open", focused);
     input.setAttribute("aria-expanded", focused ? "true" : "false");
+    const newScrollEl = panel.querySelector(".monitor-search-groups");
+    if (newScrollEl && savedScrollTop) newScrollEl.scrollTop = savedScrollTop;
   }
 
   function scheduleMonitorSearchUpdate(input) {
@@ -667,7 +681,7 @@ export function createMonitorWorkspaceApi(deps) {
     return `
       <div class="monitor-panel-cell monitor-panel-table" data-panel-kind="table" data-panel-id="${escapeAttr(panel.id)}" data-monitor-sheet="${panel.sheet}">
         <header class="monitor-panel-header">
-          <strong>${escapeAttr(panel.name)}</strong>
+          <input class="monitor-panel-name-input" type="text" value="${escapeAttr(panel.name)}" data-rename-monitor-panel="${escapeAttr(panel.id)}" maxlength="40" />
           ${panel.wholeSheet ? `<span class="tag ok">整表</span>` : ""}
           <span class="monitor-panel-meta">Sheet ${panel.sheet} · ${rows.length} 项</span>
           ${sheetStat ? `<span class="tag ${sheetStat.total > 0 ? "ok" : "warn"}">${sheetStat.total > 0 ? "刷新中" : "等待 UDP"}</span>` : ""}
@@ -683,7 +697,7 @@ export function createMonitorWorkspaceApi(deps) {
     return `
       <div class="monitor-panel-cell monitor-panel-curve" data-panel-kind="curve" data-panel-id="${escapeAttr(panel.id)}">
         <header class="monitor-panel-header">
-          <strong>${escapeAttr(panel.name)}</strong>
+          <input class="monitor-panel-name-input" type="text" value="${escapeAttr(panel.name)}" data-rename-monitor-panel="${escapeAttr(panel.id)}" maxlength="40" />
           <span class="monitor-panel-meta">${channelCount ? `${channelCount} 个通道` : "暂无通道"}</span>
           <button type="button" class="send-mini" data-remove-monitor-panel="${escapeAttr(panel.id)}">删除</button>
         </header>
@@ -793,6 +807,7 @@ export function createMonitorWorkspaceApi(deps) {
     getMonitorTelemetryRows,
     addMonitorCurvePanel,
     removeMonitorPanel,
+    renameMonitorPanel,
     getMonitorCurveWindowMs,
     setMonitorCurveWindowMs,
     forEachCurveChartInActiveTab,

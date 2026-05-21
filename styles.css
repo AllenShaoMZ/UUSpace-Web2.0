@@ -710,6 +710,40 @@ button {
   min-height: 0;
 }
 
+/* Hide inner curve chart caption inside monitor panels — monitor uses its own panel header */
+.monitor-curve-stage .curve-chart-caption {
+  display: none;
+}
+
+/* Panel name inline input */
+.monitor-panel-name-input {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 0 2px;
+  min-width: 40px;
+  max-width: 160px;
+  cursor: text;
+  border-radius: 3px;
+}
+.monitor-panel-name-input:focus {
+  outline: 1px solid var(--accent);
+  background: rgba(91, 124, 250, 0.08);
+}
+
+/* Single panel (only child) spans full width in any multi-column grid */
+.monitor-grid .monitor-panel-cell:only-child,
+.curve-page-grid .curve-chart-cell:only-child {
+  grid-column: 1 / -1;
+}
+
+/* Last panel alone in row for 2-column layout */
+.curve-page-grid.columns-2 .curve-chart-cell:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 .monitor-workspace-bar {
   display: flex;
   align-items: flex-start;

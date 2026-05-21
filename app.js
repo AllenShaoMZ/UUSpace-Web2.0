@@ -288,7 +288,7 @@ let curveChartFlushTimer = null;
 let curveChartFlushInterval = null;
 
 const APP_VERSION =
-  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.17";
+  typeof window !== "undefined" && window.UUSPACE_APP_VERSION ? window.UUSPACE_APP_VERSION : "2.0.18";
 
 function getUserSettingsApi() {
   return window.UUSPACE_USER_SETTINGS || null;
@@ -1462,7 +1462,7 @@ function bindCurveChartResize(entry) {
     if (option.legend && entry.legendSelected) {
       option.legend = { ...option.legend, selected: { ...entry.legendSelected } };
     }
-    entry.chart.setOption(option, { notMerge: true, lazyUpdate: false });
+    entry.chart.setOption(option, { notMerge: false, lazyUpdate: false });
   });
   entry.resizeObserver.observe(entry.host);
 }
@@ -2070,7 +2070,11 @@ function flushCurveChartsNow() {
     if (option.legend && entry.legendSelected) {
       option.legend = { ...option.legend, selected: { ...entry.legendSelected } };
     }
-    entry.chart.setOption(option, { notMerge: true, lazyUpdate: false });
+    // Only full-replace when series structure changes; otherwise merge to keep axisPointer state
+    const newSeriesIds = (chart.codes || []).join(",");
+    const structureChanged = entry._lastSeriesIds !== newSeriesIds;
+    entry._lastSeriesIds = newSeriesIds;
+    entry.chart.setOption(option, { notMerge: structureChanged, lazyUpdate: false });
     const w = entry.host?.clientWidth || 0;
     const h = entry.host?.clientHeight || 0;
     if (w > 1 && h > 1) entry.chart.resize();
@@ -2870,6 +2874,33 @@ function bindViewActions() {
       applyTableSearchValue(historyItem.dataset.searchHistory, { commitHistory: true });
       return;
     }
+
+    // Shift+click range-select in the monitor search dropdown
+    const monitorRow = ev.target.closest && ev.target.closest(".monitor-search-row");
+    if (monitorRow) {
+      const cb = monitorRow.querySelector("input[data-wave-select]");
+      if (!cb) return;
+      const code = cb.dataset.waveSelect;
+      if (!code) return;
+      if (ev.shiftKey && state.lastWaveSelectCode) {
+        ev.preventDefault();
+        const order = [...document.querySelectorAll("#monitorSearchDropdown input[data-wave-select]")]
+          .map((el) => el.dataset.waveSelect)
+          .filter(Boolean);
+        const from = order.indexOf(state.lastWaveSelectCode);
+        const to = order.indexOf(code);
+        if (from >= 0 && to >= 0) {
+          const [start, end] = from < to ? [from, to] : [to, from];
+          for (let i = start; i <= end; i += 1) state.selectedWaveCodes.add(order[i]);
+          state.lastWaveSelectCode = code;
+          updateWaveSelectionInPlace();
+        }
+        return;
+      }
+      state.lastWaveSelectCode = code;
+      return;
+    }
+
     const cell = ev.target.closest && ev.target.closest("[data-wave-cell]");
     if (!cell) return;
     const row = cell.closest("tr[data-param-row]");
@@ -3013,6 +3044,15 @@ function bindViewActions() {
           el.textContent = tab.name;
         });
       }
+      return;
+    }
+    if (tgt && tgt.dataset && tgt.dataset.renameMonitorPanel !== undefined) {
+      const panelId = tgt.dataset.renameMonitorPanel;
+      clearTimeout(state.renameDebounceTimers[`mpanel-${panelId}`]);
+      state.renameDebounceTimers[`mpanel-${panelId}`] = setTimeout(
+        () => monitorApi?.renameMonitorPanel(panelId, tgt.value),
+        300,
+      );
       return;
     }
     if (tgt && tgt.dataset && tgt.dataset.renameCurve !== undefined) {

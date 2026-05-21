@@ -18,7 +18,7 @@ export function formatSignificantDigits(n, sigFigs = AUTO_SIG_FIGS) {
   if (abs >= 1e8) return n.toExponential(3);
 
   const order = Math.floor(Math.log10(abs));
-  const decPlaces = Math.max(0, sigFigs - 1 - order);
+  const decPlaces = Math.min(12, Math.max(0, sigFigs - 1 - order));
   const rounded = Number.parseFloat(n.toPrecision(sigFigs));
   if (decPlaces === 0) return String(rounded);
   return rounded.toFixed(decPlaces);

@@ -472,7 +472,7 @@ class TelemetryItem:
             return value
         if self.formula == "Func0010" and len(self.params) > 1:
             return original * self.params[0] + self.params[1]
-        return 0.0
+        return original
 
     def status_text(self, value: float) -> str:
         text = (self.normal_value or "").strip()

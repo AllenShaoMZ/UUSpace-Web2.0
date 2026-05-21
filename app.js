@@ -1123,6 +1123,7 @@ function mapDefinitionToRow(definition, sheetIndex) {
     waveNo: definition.waveNo,
     bitWidth: definition.bitWidth,
     code: definition.code,
+    sheet: sheetIndex,
     name: definition.name || definition.code,
     group: `Sheet ${sheetIndex}`,
     frame: `S${sheetIndex}`,
@@ -2216,7 +2217,7 @@ function renderTelemetryTable() {
                 ${rows
                   .map(
                     (param) => `
-                      <tr class="${param.code === state.selectedParamCode ? "selected-row" : ""} ${param.updated ? "fresh-row" : ""} ${param.status === "告警" ? "alert-row" : ""}" data-param-row="${param.code}">
+                      <tr class="${param.code === state.selectedParamCode ? "selected-row" : ""} ${param.updated ? "fresh-row" : ""} ${param.status === "告警" ? "alert-row" : ""}" data-param-row="${param.code}" data-param-sheet="${Number.isFinite(Number(param.sheet)) ? param.sheet : state.activeSheet}">
                         <td data-wave-cell><input class="wave-check" type="checkbox" data-wave-select="${param.code}" ${state.selectedWaveCodes.has(param.code) ? "checked" : ""} /></td>
                         <td>${param.code}</td>
                         <td>${param.name}</td>
@@ -3424,12 +3425,21 @@ function formatValue(value) {
   return Math.abs(value) < 1 ? Number(value).toFixed(3) : Number(value).toFixed(1);
 }
 
+function resolveParamSheetIndex(param) {
+  if (Number.isFinite(Number(param?.sheet))) return Number(param.sheet);
+  const frame = String(param?.frame || "").match(/^S(\d+)$/i);
+  if (frame) return Number(frame[1]);
+  const group = String(param?.group || "").match(/Sheet\s*(\d+)/i);
+  if (group) return Number(group[1]);
+  const view = getActiveTableView();
+  if (view && Number.isFinite(Number(view.sheet))) return Number(view.sheet);
+  return Number(state.activeSheet) || 0;
+}
+
 function formatTelemetryValue(param) {
   const code = param?.code;
-  const live = code ? state.sheetLiveValues[String(state.activeSheet)]?.[code] : null;
-  const definition = code
-    ? getSheetDefinition(state.activeSheet).find((item) => item.code === code)
-    : null;
+  const sheetIndex = resolveParamSheetIndex(param);
+  const live = code ? state.sheetLiveValues[String(sheetIndex)]?.[code] : null;
   if (live) return getTelemetryDisplayValue(live, code).value;
   const raw = String(param.value ?? "").trim();
   if (!raw || raw === "—") return "—";
@@ -3749,10 +3759,10 @@ function updateSheetTabsInPlace() {
 }
 
 function updateTableRowsInPlace() {
-  const liveValues = state.sheetLiveValues[String(state.activeSheet)] || {};
-  const definitions = getSheetDefinition(state.activeSheet);
-  const defByCode = new Map(definitions.map((item) => [item.code, item]));
   document.querySelectorAll("tr[data-param-row]").forEach((row) => {
+    const sheetIndex = Number(row.dataset.paramSheet);
+    const sheetKey = String(Number.isFinite(sheetIndex) ? sheetIndex : state.activeSheet);
+    const liveValues = state.sheetLiveValues[sheetKey] || {};
     const live = liveValues[row.dataset.paramRow];
     if (!live) return;
     const display = getTelemetryDisplayValue(live, row.dataset.paramRow);
@@ -3794,7 +3804,8 @@ function syncPacketValues(packet) {
   store.set("sheetStats", updateSheetStats(state.sheetStats, packet));
   if (!packet.parsed || !packet.parsed.values) return;
   const sheetKey = String(packet.sheetIndex);
-  const nextValues = {};
+  const prevValues = state.sheetLiveValues[sheetKey] || {};
+  const nextValues = { ...prevValues };
   const packetMs = parsePacketTimeMs(packet.time);
   packet.parsed.values.forEach((item) => {
     nextValues[item.code] = { ...item, updatedAt: packet.time };

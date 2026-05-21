@@ -650,7 +650,7 @@ export function createMonitorWorkspaceApi(deps) {
                 ${rows
                   .map(
                     (param) => `
-                      <tr class="${param.code === state.selectedParamCode ? "selected-row" : ""} ${param.updated ? "fresh-row" : ""} ${param.status === "告警" ? "alert-row" : ""}" data-param-row="${param.code}">
+                      <tr class="${param.code === state.selectedParamCode ? "selected-row" : ""} ${param.updated ? "fresh-row" : ""} ${param.status === "告警" ? "alert-row" : ""}" data-param-row="${param.code}" data-param-sheet="${panel.sheet}">
                         <td data-wave-cell><input class="wave-check" type="checkbox" data-wave-select="${param.code}" ${state.selectedWaveCodes.has(param.code) ? "checked" : ""} /></td>
                         <td>${param.code}</td>
                         <td>${param.name}</td>
